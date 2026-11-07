@@ -353,6 +353,7 @@ public class MainActivity extends ComponentActivity {
     spacer(screen,7);
 
     JSONArray ledger=state.optJSONArray("ledger");
+    Map<String,Integer> receiptCounts=receiptCounts();
     LinearLayout recent=card(screen);
     if(ledger==null||ledger.length()==0){
       textInto(recent,"Операцій поки немає",14,MUTED,false);
@@ -361,7 +362,7 @@ public class MainActivity extends ComponentActivity {
       for(int i=0;i<ledger.length()&&n<5;i++){
         JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
         String kind=x.optString("kind");
-        if(!kind.equals("IN")&&!kind.equals("OUT")&&!kind.equals("REVERSAL"))continue;
+        if(!kind.equals("IN")&&!kind.equals("OUT")&&!kind.equals("REVERSAL")&&!kind.equals("OPENING"))continue;
         if(n++>0)separator(recent);
         LinearLayout item=row();item.setPadding(dp(2),dp(8),dp(2),dp(8));recent.addView(item);
         TextView symbol=text(kind.equals("IN")?"+":kind.equals("OUT")?"−":"↶",22,kind.equals("IN")?0xff168255:0xffb63f4c,true);
@@ -374,6 +375,7 @@ public class MainActivity extends ComponentActivity {
         String extra=x.optString("person_name");
         if(extra.isEmpty())extra=x.optString("category");
         textInto(detail,x.optString("date")+(extra.isEmpty()?"":" · "+extra),11,MUTED,false);
+        if(kind.equals("OUT"))receiptTag(detail,receiptCounts.getOrDefault(x.optString("id"),0),x.optString("no_receipt_reason"));
         TextView amount=text((x.optLong("amount")>=0?"+":"−")+money(Math.abs(x.optLong("amount")))+" ₴",15,x.optLong("amount")>=0?0xff168255:0xffb63f4c,true);
         amount.setGravity(Gravity.RIGHT);item.addView(amount);
         item.setOnClickListener(v->showDetail(x));
@@ -418,19 +420,40 @@ public class MainActivity extends ComponentActivity {
 
   private void drawReceipts(){
     textInto(screen,"Чеки витрат",23,NAVY,true);
-    JSONArray ledger=state.optJSONArray("ledger"),receipts=state.optJSONArray("receipts");
+    JSONArray ledger=state.optJSONArray("ledger");
+    Map<String,Integer> receiptCounts=receiptCounts();
     if(ledger==null||ledger.length()==0){textInto(screen,"Витрат поки немає",14,MUTED,false);return;}
     for(int i=0;i<ledger.length();i++){
       JSONObject tx=ledger.optJSONObject(i);if(tx==null||!tx.optString("kind").equals("OUT"))continue;
-      int count=0;
-      if(receipts!=null)for(int j=0;j<receipts.length();j++){
-        JSONObject r=receipts.optJSONObject(j);if(r!=null&&r.optString("ledger_id").equals(tx.optString("id")))count++;
-      }
+      int count=receiptCounts.getOrDefault(tx.optString("id"),0);
       LinearLayout c=card(screen);
       textInto(c,tx.optString("purpose")+" · "+money(Math.abs(tx.optLong("amount")))+" ₴",15,NAVY,true);
-      textInto(c,tx.optString("date")+" · "+(count>0?"Є чеків: "+count:"Без чека: "+tx.optString("no_receipt_reason")),12,count>0?0xff168255:MUTED,false);
+      textInto(c,tx.optString("date"),12,MUTED,false);
+      receiptTag(c,count,tx.optString("no_receipt_reason"));
       button(c,"Відкрити витрату й чеки",()->showDetail(tx),false);
     }
+  }
+
+  private Map<String,Integer> receiptCounts(){
+    Map<String,Integer> counts=new HashMap<>();
+    JSONArray receipts=state.optJSONArray("receipts");
+    if(receipts==null)return counts;
+    for(int i=0;i<receipts.length();i++){
+      JSONObject r=receipts.optJSONObject(i);if(r==null)continue;
+      String id=r.optString("ledger_id");if(id.isEmpty())continue;
+      counts.put(id,counts.getOrDefault(id,0)+1);
+    }
+    return counts;
+  }
+  private void receiptTag(LinearLayout parent,int count,String reason){
+    LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+    box.setPadding(dp(8),dp(4),dp(8),dp(4));
+    boolean yes=count>0;
+    box.setBackground(background(yes?0xffe4f4e9:0xfffff2cf,9));
+    LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);
+    p.topMargin=dp(4);p.bottomMargin=dp(3);parent.addView(box,p);
+    textInto(box,yes?("✓ Є чек"+(count>1?"и: "+count:"")):"⚠ Немає чека",12,yes?0xff167743:0xff8b5b00,true);
+    if(!yes&&reason!=null&&!reason.trim().isEmpty())textInto(box,"Причина: "+reason,11,0xff805900,false);
   }
 
   private void drawQuestions(){
@@ -581,15 +604,15 @@ public class MainActivity extends ComponentActivity {
 
   private void drawHistory(){
     textInto(screen,"Прихід, розхід і чеки",23,NAVY,true);
-    JSONArray ledger=state.optJSONArray("ledger"),receipts=state.optJSONArray("receipts");
+    JSONArray ledger=state.optJSONArray("ledger");
+    Map<String,Integer> receiptCounts=receiptCounts();
     if(ledger==null||ledger.length()==0){textInto(screen,"Операцій немає або дані не завантажені",14,MUTED,false);return;}
     for(int i=0;i<Math.min(ledger.length(),150);i++){
       JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
       LinearLayout c=card(screen);String kind=x.optString("kind"),title=kind.equals("IN")?"＋ Прихід":kind.equals("OUT")?"− Розхід":"↶ Коригування";
       textInto(c,title+"  "+money(Math.abs(x.optLong("amount")))+" ₴",16,kind.equals("OUT")?0xffb84d46:TEAL,true);
       textInto(c,x.optString("date")+" · "+x.optString("purpose"),13,MUTED,false);
-      int n=0;if(receipts!=null)for(int j=0;j<receipts.length();j++)if(x.optString("id").equals(receipts.optJSONObject(j).optString("ledger_id")))n++;
-      if(kind.equals("OUT"))textInto(c,n>0?"📎 Чеків: "+n:"Чека немає: "+x.optString("no_receipt_reason"),12,MUTED,false);
+      if(kind.equals("OUT"))receiptTag(c,receiptCounts.getOrDefault(x.optString("id"),0),x.optString("no_receipt_reason"));
       button(c,"Деталі та запитання",()->showDetail(x),false);
     }
   }
