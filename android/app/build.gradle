@@ -1,0 +1,12 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'ua.obshchak.mobile'
+    compileSdk 35
+    defaultConfig { applicationId 'ua.obshchak.mobile'; minSdk 26; targetSdk 34; versionCode 2; versionName '2.0-test' }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+}
+dependencies {
+    implementation 'androidx.activity:activity:1.9.3'
+    implementation 'androidx.work:work-runtime:2.12.0'
+}

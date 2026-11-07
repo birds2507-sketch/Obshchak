@@ -1,0 +1,537 @@
+package ua.obshchak.mobile;
+
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.MediaStore;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
+import android.util.Base64;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Spinner;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.activity.ComponentActivity;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.FileProvider;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/** Native Android UX, durable drafts & offline outbox. Google Sheets/Drive remain the server-side source of truth. */
+public class MainActivity extends ComponentActivity {
+  private static final int TEAL=0xff0b756d, NAVY=0xff18323a, MUTED=0xff617984, BG=0xfff4f7f8;
+  private Settings settings;private SecurePrefs secure;private LocalStore outbox;private final ExecutorService pool=Executors.newSingleThreadExecutor();
+  private LinearLayout screen, content;private JSONObject state=new JSONObject();private String page="home";
+  private String formKind="OUT";private final Map<String,EditText> fields=new HashMap<>();
+  private Spinner methodSpinner;private TextView filesLabel;private String receiptForLedger="";
+  private String cameraTempPath="";
+  private ActivityResultLauncher<Uri> cameraLauncher;
+  private ActivityResultLauncher<String[]> pickerLauncher;
+  private boolean doingRequest=false;
+  private final Handler pollHandler=new Handler(Looper.getMainLooper());
+  private final Runnable pollTask=new Runnable(){@Override public void run(){
+    if(!secure.token().isEmpty()&&!doingRequest&&page.equals("home"))refresh();
+    pollHandler.postDelayed(this,60000);
+  }};
+
+  @Override protected void onCreate(Bundle b){
+    super.onCreate(b);settings=new Settings(this);secure=new SecurePrefs(this);outbox=new LocalStore(this);
+    cameraLauncher=registerForActivityResult(new ActivityResultContracts.TakePicture(),ok->{
+      if(ok){try{Uri u=FileProvider.getUriForFile(this,getPackageName()+".files",new File(cameraTempPath));savedReceipt(u,"image/jpeg");}
+      catch(Exception e){message(e.getMessage());}}
+      else {receiptForLedger="";rememberPhoto();message("Фото не зроблено. Чернетка збережена.");}
+    });
+    pickerLauncher=registerForActivityResult(new ActivityResultContracts.OpenDocument(),u->{if(u!=null){
+      try{savedReceipt(u,getContentResolver().getType(u));}catch(Exception e){message(e.getMessage());}
+    }else{receiptForLedger="";rememberPhoto();}});
+    cameraTempPath=getPreferences(MODE_PRIVATE).getString("camera_path","");
+    receiptForLedger=getPreferences(MODE_PRIVATE).getString("photo_target","");
+    String cache=getPreferences(MODE_PRIVATE).getString("last_state","");
+    try{state=new JSONObject(cache);}catch(Exception ignored){}
+    if(b!=null){page=b.getString("page","home");formKind=b.getString("formKind","OUT");}
+    if(settings.userId().isEmpty()||secure.token().isEmpty())page="login";
+    else {if(isCashier()&&!secure.deviceToken().isEmpty()){
+        outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
+      }}
+    draw();if(!page.equals("login"))refresh();
+  }
+  @Override protected void onResume(){super.onResume();pollHandler.postDelayed(pollTask,60000);}
+  @Override protected void onPause(){pollHandler.removeCallbacks(pollTask);super.onPause();}
+  @Override protected void onSaveInstanceState(Bundle b){saveDraft();b.putString("page",page);b.putString("formKind",formKind);super.onSaveInstanceState(b);}
+  @Override protected void onDestroy(){pool.shutdown();super.onDestroy();}
+
+  private void draw(){
+    ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setBackgroundColor(BG);
+    screen=new LinearLayout(this);screen.setOrientation(LinearLayout.VERTICAL);screen.setPadding(dp(16),dp(18),dp(16),dp(28));
+    scroll.addView(screen);setContentView(scroll);
+    TextView logo=text("₴  ОБЩАК",26,TEAL,true);screen.addView(logo);
+    textInto(screen,"Спільна каса · Android",13,MUTED,false);
+    spacer(screen,14);
+    if(page.equals("login")){drawLogin();return;}
+    if(page.equals("password")){drawChangePassword();return;}
+    headerActions();
+    if(page.equals("home"))drawHome();
+    else if(page.equals("form"))drawForm();
+    else if(page.equals("queue"))drawQueue();
+    else if(page.equals("history"))drawHistory();
+    else if(page.equals("users"))drawUsers();
+    else if(page.equals("votes"))drawVotes();
+    else if(page.equals("reports"))drawReports();
+    else if(page.equals("activity"))drawActivity();
+  }
+  private void headerActions(){
+    LinearLayout row=row();screen.addView(row);
+    button(row,"⌂ Головна",()->go("home"),true);
+    button(row,"⟳ Оновити",this::refresh,false);
+    button(row,"⇥ Вихід",this::logout,false);
+    spacer(screen,12);
+    textInto(screen,settings.username()+" · "+roleName(settings.role()),13,MUTED,false);
+    if(outbox.list(settings.userId(),false).size()>0)textInto(screen,"Локальних записів у черзі: "+outbox.list(settings.userId(),false).size(),13,TEAL,true);
+    spacer(screen,10);
+  }
+  private void drawLogin(){
+    textInto(screen,"Вхід у закриту касу",23,NAVY,true);spacer(screen,12);
+    EditText endpoint=input(screen,"Посилання Google Apps Script (/exec)",settings.url(),false);endpoint.setSingleLine(true);
+    EditText user=input(screen,"Логін",getPreferences(MODE_PRIVATE).getString("last_login","kasyr"),false);
+    EditText pass=input(screen,"Пароль","",true);
+    button(screen,"Увійти",()->{
+      String url=endpoint.getText().toString().trim();if(!url.matches("https://script\\.google\\.com/macros/s/[^/?#]+/exec")){
+        message("Вставте правильне HTTPS-посилання, яке закінчується на /exec");return;}
+      settings.url(url);String login=user.getText().toString().trim();String password=pass.getText().toString();
+      JSONObject d=new JSONObject();try{d.put("login",login);d.put("password",password);}catch(Exception ignored){}
+      remote("login",d,"",r->{
+        try {
+          String oldUser=settings.userId(),newUser=r.getJSONObject("user").optString("id");
+          if(!oldUser.equals(newUser))secure.clearDeviceToken();
+          secure.setToken(r.getString("token"));settings.user(r.getJSONObject("user"));
+          state=new JSONObject();
+          getPreferences(MODE_PRIVATE).edit().putString("last_login",login).remove("last_state").apply();
+          if(r.optBoolean("mustChange")){page="password";draw();}
+          else {page="home";draw();refresh();}
+        }catch(Exception ex){message("Не вдалося зберегти сеанс: "+ex.getMessage());}
+      });
+    },true);
+    textInto(screen,"Облікові записи створює касир. Пароль не зберігається на телефоні: лише тимчасовий токен у захищеному сховищі Android.",12,MUTED,false);
+  }
+  private void registerDeviceKey(){
+    if(!isCashier()||secure.token().isEmpty())return;
+    JSONObject d=new JSONObject();try{d.put("deviceId",settings.deviceId());}catch(Exception ignored){}
+    remote("registerDevice",d,secure.token(),r->{try{
+      secure.setDeviceToken(r.getString("deviceToken"));
+      outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
+      message("Фонову синхронізацію підключено на 30 днів");
+    }catch(Exception e){message("Помилка ключа синхронізації: "+e.getMessage());}});
+  }
+  private void drawChangePassword(){
+    textInto(screen,"Перший вхід: змініть пароль",21,NAVY,true);
+    EditText old=input(screen,"Тимчасовий пароль","",true);
+    EditText fresh=input(screen,"Новий пароль (12+ символів, літери й цифри)","",true);
+    button(screen,"Змінити пароль",()->{
+      JSONObject d=new JSONObject();try{d.put("old",old.getText().toString());d.put("fresh",fresh.getText().toString());}catch(Exception ignored){}
+      remote("changePassword",d,secure.token(),r->{secure.clear();settings.clearUser();page="login";draw();message("Пароль змінено. Увійдіть ще раз.");});
+    },true);
+  }
+  private void drawHome(){
+    JSONObject t=state.optJSONObject("totals");if(t==null)t=new JSONObject();
+    LinearLayout card=card(screen);textInto(card,"ЗАГАЛЬНИЙ ЗАЛИШОК",12,MUTED,true);
+    textInto(card,money(t.optLong("balance"))+" ₴",32,TEAL,true);spacer(card,6);
+    textInto(card,"Прихід: +"+money(t.optLong("income"))+" ₴",16,0xff0a8c63,true);
+    textInto(card,"Розхід: −"+money(t.optLong("expense"))+" ₴",16,0xffbf4646,true);
+    textInto(card,"Обліковий баланс. Локальні записи до синхронізації не враховані.",12,MUTED,false);
+    spacer(screen,10);
+    if(isCashier()){
+      LinearLayout row=row();screen.addView(row);
+      button(row,"＋ Прихід",()->{formKind="IN";go("form");},true);
+      button(row,"− Витрата",()->{formKind="OUT";go("form");},true);
+    }
+    button(screen,"☁ Черга синхронізації та фото",()->go("queue"),false);
+    button(screen,"≡ Усі операції та чеки",()->go("history"),false);
+    button(screen,"♙ Учасники",()->go("users"),false);
+    button(screen,"☑ Вибори касира",()->go("votes"),false);
+    button(screen,"▤ Звіти PDF",()->go("reports"),false);
+    button(screen,"◷ Події та сповіщення",()->go("activity"),false);
+    button(screen,"↗ Відкрити повну вебверсію",()->{
+      try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(settings.url())));}catch(Exception e){message(e.getMessage());}
+    },false);
+    textInto(screen,"Чернетки витрат і фото зберігаються навіть після закриття застосунку. Інтернет потрібен лише для передачі на Google Drive та перегляду нових операцій.",13,MUTED,false);
+  }
+
+  private boolean isCashier(){return settings.role().equals("CASHIER");}
+  private void drawForm(){
+    if(!isCashier()){message("Фінансові операції може додавати лише касир");go("home");return;}
+    fields.clear();JSONObject draft=settings.getDraft(formKind);
+    textInto(screen,formKind.equals("OUT")?"Нова витрата":"Новий прихід",23,NAVY,true);
+    textInto(screen,"Поля зберігаються автоматично. Фото не очистить форму.",13,TEAL,false);
+    spacer(screen,10);
+    field("date","Дата (РРРР-ММ-ДД)",draft.optString("date",today()));
+    field("amount","Сума, грн",draft.optString("amount",""));
+    if(formKind.equals("IN")){
+      field("personName","Хто вніс гроші",draft.optString("personName",""));
+      methodSpinner=new Spinner(this);ArrayAdapter<String> adapt=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Готівка","На картку"});
+      methodSpinner.setAdapter(adapt);methodSpinner.setSelection(draft.optString("method","CASH").equals("BANK")?1:0);
+      screen.addView(methodSpinner);
+      methodSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){saveDraft();}});
+    } else {
+      field("category","Категорія",draft.optString("category","Господарські потреби"));
+      field("noReceiptReason","Якщо немає чека — причина",draft.optString("noReceiptReason",""));
+      LinearLayout row=row();screen.addView(row);
+      button(row,"📷 Сфотографувати",()->takePhoto(""),false);
+      button(row,"📎 З галереї / PDF",()->pickPhoto(""),false);
+      filesLabel=text("",13,MUTED,false);screen.addView(filesLabel);showDraftFiles();
+    }
+    field("purpose","Призначення",draft.optString("purpose",""));
+    spacer(screen,8);
+    button(screen,"✓ Зберегти на телефоні й синхронізувати",this::queueForm,true);
+    textInto(screen,"Якщо мережі немає, запис залишиться у черзі. Не видаляйте дані застосунку до завершення передачі.",12,MUTED,false);
+  }
+  private void field(String key,String label,String value){
+    EditText edit=input(screen,label,value,false);fields.put(key,edit);
+    edit.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){saveDraft();}public void afterTextChanged(Editable e){}});
+  }
+  private synchronized void saveDraft(){if(!page.equals("form"))return;
+    JSONObject d=settings.getDraft(formKind);try{
+      for(Map.Entry<String,EditText> e:fields.entrySet())d.put(e.getKey(),e.getValue().getText().toString());
+      if(methodSpinner!=null&&formKind.equals("IN"))d.put("method",methodSpinner.getSelectedItemPosition()==1?"BANK":"CASH");
+      settings.saveDraft(formKind,d);
+    }catch(Exception ignored){}
+  }
+  private void showDraftFiles(){if(filesLabel==null)return;
+    JSONArray a=settings.getDraft("OUT").optJSONArray("files");
+    if(a==null||a.length()==0){filesLabel.setText("Чеків поки немає. Можна прикріпити кілька.");return;}
+    StringBuilder sb=new StringBuilder("Локально збережено чеків: "+a.length());
+    for(int i=0;i<a.length();i++)sb.append("\n✓ ").append(a.optJSONObject(i).optString("name","Фото"));
+    filesLabel.setText(sb.toString());
+  }
+  private void queueForm(){
+    saveDraft();JSONObject d=settings.getDraft(formKind);
+    String amount=d.optString("amount","").trim(),purpose=d.optString("purpose","").trim();
+    if(!amount.matches("[0-9]+([.,][0-9]{1,2})?")||amount.equals("0")||purpose.isEmpty()){
+      message("Заповніть коректну суму (більше 0) та призначення");return;}
+    if(!d.optString("date","").matches("20[0-9]{2}-[0-9]{2}-[0-9]{2}")){message("Дата має бути у форматі РРРР-ММ-ДД");return;}
+    JSONArray files=d.optJSONArray("files");if(files==null)files=new JSONArray();
+    if(formKind.equals("OUT")&&files.length()==0&&d.optString("noReceiptReason","").trim().isEmpty()){
+      message("Додайте чек або поясніть, чому його немає");return;}
+    if(formKind.equals("IN")&&d.optString("personName","").trim().isEmpty()){
+      message("Вкажіть, від кого отримано гроші");return;}
+    if(formKind.equals("OUT")&&d.optString("category","").trim().isEmpty()){
+      message("Вкажіть категорію витрати");return;}
+    try {
+      JSONObject tx=new JSONObject();tx.put("kind",formKind);tx.put("date",d.getString("date"));tx.put("amount",amount.replace(',','.'));
+      tx.put("purpose",purpose);if(formKind.equals("IN")){tx.put("method",d.optString("method","CASH"));tx.put("personName",d.optString("personName"));}
+      else {tx.put("category",d.optString("category"));
+        tx.put("noReceiptReason",files.length()>0?"Чек збережений на телефоні; очікується синхронізація":d.optString("noReceiptReason"));}
+      String id=UUID.randomUUID().toString();JSONObject envelope=new JSONObject();envelope.put("tx",tx);envelope.put("files",files);
+      outbox.add(id,settings.userId(),envelope.toString());
+      settings.clearDraft(formKind);QueueSyncWorker.schedule(this);
+      message("Збережено на телефоні. Надішлеться, коли буде інтернет.");go("queue");
+    }catch(Exception ex){message("Не вдалося зберегти запис: "+ex.getMessage());}
+  }
+
+  private void takePhoto(String ledgerId){
+    saveDraft();receiptForLedger=ledgerId;
+    File folder=new File(getFilesDir(),"receipts/staging");if(!folder.exists())folder.mkdirs();
+    File file=new File(folder,UUID.randomUUID()+".jpg");cameraTempPath=file.getAbsolutePath();
+    rememberPhoto();
+    Uri u=FileProvider.getUriForFile(this,getPackageName()+".files",file);
+    cameraLauncher.launch(u);
+  }
+  private void pickPhoto(String ledgerId){saveDraft();receiptForLedger=ledgerId;rememberPhoto();pickerLauncher.launch(new String[]{"image/*","application/pdf"});}
+  private void rememberPhoto(){getPreferences(MODE_PRIVATE).edit().putString("camera_path",cameraTempPath).putString("photo_target",receiptForLedger).apply();}
+  private void savedReceipt(Uri uri,String mime) throws Exception {
+    ImageStore.Receipt r=ImageStore.capture(this,uri,mime);
+    if(!receiptForLedger.isEmpty()){
+      JSONObject payload=new JSONObject();JSONArray files=new JSONArray();files.put(r.info);payload.put("files",files);
+      outbox.addReceiptOnly(UUID.randomUUID().toString(),settings.userId(),receiptForLedger,payload);
+      QueueSyncWorker.schedule(this);message("Чек збережений на телефоні. Додається до витрати при появі інтернету.");
+      receiptForLedger="";rememberPhoto();go("queue");
+    }else {
+      JSONObject draft=settings.getDraft("OUT");JSONArray files=draft.optJSONArray("files");if(files==null)files=new JSONArray();
+      files.put(r.info);draft.put("files",files);settings.saveDraft("OUT",draft);
+      if(page.equals("form"))showDraftFiles();
+      message("Чек збережений локально. Заповнені поля не змінено.");
+    }
+  }
+
+  private void drawQueue(){
+    textInto(screen,"Черга синхронізації",23,NAVY,true);
+    button(screen,"⟳ Спробувати синхронізувати",()->{
+      if(isCashier()&&secure.deviceToken().isEmpty()){registerDeviceKey();return;}
+      outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);message("Передачу заплановано за наявності мережі");
+    },true);
+    if(isCashier())button(screen,"🔑 Оновити дозвіл фонової синхронізації",this::registerDeviceKey,false);
+    java.util.List<LocalStore.Entry> list=outbox.list(settings.userId(),true);
+    if(list.isEmpty()){textInto(screen,"Локальних записів ще немає",15,MUTED,false);return;}
+    for(LocalStore.Entry e:list){
+      LinearLayout box=card(screen);JSONObject tx=e.body().optJSONObject("tx");
+      String title=tx==null?"📎 Чек до попередньої витрати":tx.optString("kind").equals("IN")?"Прихід":"Розхід";
+      textInto(box,title+" · "+(tx==null?"":tx.optString("amount")+" грн"),16,NAVY,true);
+      textInto(box,"Статус: "+labelStatus(e.status),13,e.status.equals(LocalStore.SYNCED)?TEAL:MUTED,true);
+      if(tx!=null)textInto(box,tx.optString("purpose"),13,MUTED,false);
+      if(!e.error.isEmpty())textInto(box,e.error,12,0xffb34a45,false);
+      if(e.status.equals(LocalStore.FAILED))button(box,"Повторити після виправлення проблеми",()->{outbox.retry(e.id);QueueSyncWorker.schedule(this);draw();},false);
+      JSONArray photos=e.body().optJSONArray("files");if(photos!=null){textInto(box,"Прикріплених файлів: "+photos.length(),12,MUTED,false);
+        if(photos.length()>0){JSONObject f=photos.optJSONObject(0);
+          button(box,"Переглянути збережений чек",()->openLocal(f),false);}}
+    }
+    textInto(screen,"Завантажено означає, що Google підтвердив збереження. Збережені оригінали чеків залишаються в пам'яті застосунку.",12,MUTED,false);
+  }
+  private String labelStatus(String status){switch(status){case LocalStore.PENDING:return "Очікує інтернету / відправлення";case LocalStore.SYNCED:return "Завантажено в Google";case LocalStore.AUTH:return "Потрібен повторний вхід";default:return "Потребує уваги";}}
+  private void openLocal(JSONObject file){try{
+    File f=new File(file.getString("originalPath"));Uri u=FileProvider.getUriForFile(this,getPackageName()+".files",f);
+    Intent i=new Intent(Intent.ACTION_VIEW).setDataAndType(u,file.optString("originalMime",file.optString("mime","image/jpeg"))).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    startActivity(Intent.createChooser(i,"Відкрити чек"));
+  }catch(Exception ex){message("Не вдалося відкрити локальний чек: "+ex.getMessage());}}
+
+  private void drawHistory(){
+    textInto(screen,"Прихід, розхід і чеки",23,NAVY,true);
+    JSONArray ledger=state.optJSONArray("ledger"),receipts=state.optJSONArray("receipts");
+    if(ledger==null||ledger.length()==0){textInto(screen,"Операцій немає або дані не завантажені",14,MUTED,false);return;}
+    for(int i=0;i<Math.min(ledger.length(),150);i++){
+      JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
+      LinearLayout c=card(screen);String kind=x.optString("kind"),title=kind.equals("IN")?"＋ Прихід":kind.equals("OUT")?"− Розхід":"↶ Коригування";
+      textInto(c,title+"  "+money(Math.abs(x.optLong("amount")))+" ₴",16,kind.equals("OUT")?0xffb84d46:TEAL,true);
+      textInto(c,x.optString("date")+" · "+x.optString("purpose"),13,MUTED,false);
+      int n=0;if(receipts!=null)for(int j=0;j<receipts.length();j++)if(x.optString("id").equals(receipts.optJSONObject(j).optString("ledger_id")))n++;
+      if(kind.equals("OUT"))textInto(c,n>0?"📎 Чеків: "+n:"Чека немає: "+x.optString("no_receipt_reason"),12,MUTED,false);
+      button(c,"Деталі та запитання",()->showDetail(x),false);
+    }
+  }
+  private void showDetail(JSONObject item){
+    LinearLayout layout=new LinearLayout(this);layout.setOrientation(LinearLayout.VERTICAL);layout.setPadding(dp(16),dp(10),dp(16),dp(8));
+    textInto(layout,item.optString("purpose")+" · "+money(Math.abs(item.optLong("amount")))+" грн",18,NAVY,true);
+    JSONArray receipts=state.optJSONArray("receipts");
+    if(receipts!=null)for(int i=0;i<receipts.length();i++){
+      JSONObject r=receipts.optJSONObject(i);if(r!=null&&r.optString("ledger_id").equals(item.optString("id")))
+        button(layout,"📎 "+r.optString("filename"),()->fetchReceipt(r.optString("id")),false);
+    }
+    if(isCashier()&&item.optString("kind").equals("OUT")){
+      button(layout,"＋ Сфотографувати чек",()->takePhoto(item.optString("id")),false);
+      button(layout,"＋ Додати чек із галереї",()->pickPhoto(item.optString("id")),false);
+    }
+    JSONArray comments=state.optJSONArray("comments");
+    if(comments!=null)for(int i=0;i<comments.length();i++){
+      JSONObject c=comments.optJSONObject(i);if(c!=null&&c.optString("ledger_id").equals(item.optString("id")))textInto(layout,"💬 "+nameOf(c.optString("author_id"))+": "+c.optString("message"),13,NAVY,false);
+    }
+    EditText comment=input(layout,"Запитання або відповідь (видно всім)","",false);
+    button(layout,"Надіслати коментар",()->{if(comment.getText().toString().trim().isEmpty())return;
+      JSONObject d=new JSONObject();try{d.put("ledgerId",item.optString("id"));d.put("message",comment.getText().toString());}catch(Exception ignored){}
+      remote("comment",d,secure.token(),r->{message("Коментар опубліковано");refresh();});
+    },true);
+    if(isCashier()&&(item.optString("kind").equals("OUT")||item.optString("kind").equals("IN")))
+      button(layout,"↶ Сторнувати помилкову операцію",()->prompt("Причина сторнування",reason->{
+        JSONObject d=new JSONObject();try{d.put("id",item.optString("id"));d.put("reason",reason);}catch(Exception ignored){}
+        new AlertDialog.Builder(this).setTitle("Незмінність історії").setMessage("Створити окрему коригувальну операцію? Первинну витрату не буде видалено.")
+          .setNegativeButton("Ні",null).setPositiveButton("Так",(di,w)->remote("reverseTransaction",d,secure.token(),r->{message("Сторнування створено");refresh();})).show();
+      }),false);
+    ScrollView v=new ScrollView(this);v.addView(layout);
+    new AlertDialog.Builder(this).setTitle("Деталі операції").setView(v).setPositiveButton("Закрити",null).show();
+  }
+  private String nameOf(String id){JSONArray users=state.optJSONArray("users");if(users!=null)for(int i=0;i<users.length();i++){JSONObject u=users.optJSONObject(i);if(id.equals(u.optString("id")))return u.optString("name");}return "Учасник";}
+  private void fetchReceipt(String id){JSONObject d=new JSONObject();try{d.put("id",id);}catch(Exception ignored){}
+    remote("getReceipt",d,secure.token(),r->{try{
+      byte[] bytes=Base64.decode(r.getString("data"),Base64.DEFAULT);
+      String mime=r.optString("mime","image/jpeg");String ext=mime.equals("application/pdf")?"pdf":mime.equals("image/png")?"png":"jpg";
+      File f=new File(getCacheDir(),"receipt_"+UUID.randomUUID()+"."+ext);
+      try(FileOutputStream out=new FileOutputStream(f)){out.write(bytes);}
+      Uri uri=FileProvider.getUriForFile(this,getPackageName()+".files",f);
+      Intent open=new Intent(Intent.ACTION_VIEW).setDataAndType(uri,mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      startActivity(Intent.createChooser(open,"Переглянути чек"));
+    }catch(Exception ex){message(ex.getMessage());}});
+  }
+
+  private void drawUsers(){
+    textInto(screen,"Учасники",23,NAVY,true);
+    JSONArray users=state.optJSONArray("users");int active=0;
+    if(users!=null)for(int i=0;i<users.length();i++)if(users.optJSONObject(i).optBoolean("active"))active++;
+    textInto(screen,active+" із 10 активних",15,TEAL,true);
+    if(users!=null)for(int i=0;i<users.length();i++){
+      JSONObject u=users.optJSONObject(i);LinearLayout c=card(screen);
+      textInto(c,u.optString("name"),16,NAVY,true);
+      textInto(c,u.optString("login")+" · "+roleName(u.optString("role"))+(u.optBoolean("active")?"":" · заблокований"),12,MUTED,false);
+    }
+    if(settings.role().equals("CASHIER")||settings.role().equals("RESERVE")){
+      button(screen,"＋ Додати учасника",()->{
+        LinearLayout v=new LinearLayout(this);v.setOrientation(LinearLayout.VERTICAL);v.setPadding(dp(18),0,dp(18),0);
+        EditText name=input(v,"Ім'я","",false),login=input(v,"Логін (латиницею)","",false);
+        new AlertDialog.Builder(this).setTitle("Новий учасник").setView(v).setNegativeButton("Скасувати",null).setPositiveButton("Створити",(di,w)->{
+          JSONObject d=new JSONObject();try{d.put("name",name.getText().toString());d.put("login",login.getText().toString());}catch(Exception ignored){}
+          remote("invite",d,secure.token(),r->{
+            String secret="Логін: "+r.optString("login")+"\nТимчасовий пароль: "+r.optString("password");
+            new AlertDialog.Builder(this).setTitle("Передайте особисто").setMessage(secret)
+              .setPositiveButton("Скопіювати",(d2,w2)->{
+                ClipboardManager cm=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);cm.setPrimaryClip(ClipData.newPlainText("ОБЩАК",secret));
+              }).setNegativeButton("Закрити",null).show();refresh();
+          });
+        }).show();
+      },true);
+      textInto(screen,"Керування блокуванням, паролями та резервним адміністратором також доступне в повній вебверсії.",12,MUTED,false);
+    }
+  }
+  private void drawVotes(){
+    textInto(screen,"Вибори касира",23,NAVY,true);
+    JSONArray elections=state.optJSONArray("elections");JSONObject live=null;
+    if(elections!=null)for(int i=0;i<elections.length();i++){
+      JSONObject e=elections.optJSONObject(i);String status=e.optString("status");
+      if(status.equals("PROPOSED")||status.equals("VOTING")||status.equals("APPROVED")){live=e;break;}
+    }
+    JSONArray users=state.optJSONArray("users");int count=0;
+    if(users!=null)for(int i=0;i<users.length();i++)if(users.optJSONObject(i).optBoolean("active"))count++;
+    final int required=count/2+1;
+    if(count<3){textInto(screen,"Вибори доступні від 3 учасників. Зараз: "+count,14,MUTED,false);return;}
+    if(live==null){
+      textInto(screen,"Ініціатива двох людей. Для перемоги потрібна більшість: "+required+" із "+count+".",13,MUTED,false);
+      button(screen,"Запропонувати кандидата",()->{
+        ArrayList<String> names=new ArrayList<>(), ids=new ArrayList<>();
+        if(users!=null)for(int i=0;i<users.length();i++){
+          JSONObject u=users.optJSONObject(i);if(u.optBoolean("active")&&!u.optString("role").equals("CASHIER")){
+            names.add(u.optString("name"));ids.add(u.optString("id"));
+          }
+        }
+        if(names.isEmpty())return;
+        new AlertDialog.Builder(this).setTitle("Кандидат у касири").setItems(names.toArray(new String[0]),(d,pos)->{
+          JSONObject body=new JSONObject();try{body.put("candidateId",ids.get(pos));}catch(Exception ignored){}
+          remote("proposeElection",body,secure.token(),r->{message("Ініціативу створено");refresh();});
+        }).show();
+      },true);
+    }else{
+      JSONObject e=live;String status=e.optString("status"),id=e.optString("id");
+      textInto(screen,"Кандидат: "+nameOf(e.optString("candidate_id")),20,NAVY,true);
+      textInto(screen,"Статус: "+status,13,MUTED,false);
+      int threshold=e.optInt("required_votes",required);
+      textInto(screen,"Голосів потрібно: "+threshold,14,TEAL,true);
+      if(status.equals("PROPOSED"))button(screen,"Підтримати ініціативу",()->simpleAction("supportElection",id),true);
+      if(status.equals("VOTING")){
+        LinearLayout row=row();screen.addView(row);
+        button(row,"За",()->vote(id,"YES"),true);
+        button(row,"Проти",()->vote(id,"NO"),false);
+      }
+      if(status.equals("APPROVED")&&e.optString("candidate_id").equals(settings.userId()))
+        button(screen,"Прийняти повноваження",()->simpleAction("acceptElection",id),true);
+      if(!status.equals("PROPOSED")&&!status.equals("VOTING")&&!status.equals("APPROVED"))textInto(screen,"Завершено",13,MUTED,false);
+    }
+    textInto(screen,"Повна історія голосів та акт передачі каси доступні у вебверсії.",12,MUTED,false);
+  }
+  private void vote(String id,String vote){new AlertDialog.Builder(this).setTitle("Підтвердити голос?").setMessage("Після голосування змінити відповідь неможливо.")
+    .setNegativeButton("Ні",null).setPositiveButton("Так",(d,w)->{
+      JSONObject body=new JSONObject();try{body.put("id",id);body.put("vote",vote);}catch(Exception ignored){}
+      remote("castVote",body,secure.token(),r->{message("Голос враховано");refresh();});
+    }).show();}
+  private void simpleAction(String action,String id){JSONObject body=new JSONObject();try{body.put("id",id);}catch(Exception ignored){}
+    remote(action,body,secure.token(),r->{message("Успішно");refresh();});}
+
+  private void drawReports(){
+    textInto(screen,"Звіт общака",23,NAVY,true);
+    EditText from=input(screen,"З дати (РРРР-ММ-ДД)",today().substring(0,7)+"-01",false);
+    EditText to=input(screen,"До дати (РРРР-ММ-ДД)",today(),false);
+    button(screen,"Завантажити PDF без фото чеків",()->{
+      JSONObject d=new JSONObject();try{d.put("from",from.getText().toString());d.put("to",to.getText().toString());}catch(Exception ignored){}
+      remote("pdf",d,secure.token(),r->{try{
+        byte[] pdf=Base64.decode(r.getString("data"),Base64.DEFAULT);
+        File file=new File(getCacheDir(),"OBSHCHAK_"+System.currentTimeMillis()+".pdf");
+        try(FileOutputStream out=new FileOutputStream(file)){out.write(pdf);}
+        Uri uri=FileProvider.getUriForFile(this,getPackageName()+".files",file);
+        Intent send=new Intent(Intent.ACTION_SEND).setType("application/pdf").putExtra(Intent.EXTRA_STREAM,uri)
+          .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivity(Intent.createChooser(send,"Зберегти або надіслати звіт"));
+      }catch(Exception ex){message(ex.getMessage());}});
+    },true);
+    textInto(screen,"PDF містить усі операції та позначки «Є чек» / «Немає чека». Самі фото залишаються в онлайн-журналі.",12,MUTED,false);
+  }
+  private void drawActivity(){
+    textInto(screen,"Останні події",23,NAVY,true);
+    JSONArray events=state.optJSONArray("events");if(events!=null)for(int i=0;i<Math.min(50,events.length());i++){
+      JSONObject e=events.optJSONObject(i);LinearLayout c=card(screen);
+      textInto(c,e.optString("summary"),14,NAVY,true);textInto(c,e.optString("created_at"),12,MUTED,false);
+    }
+    textInto(screen,"Це повідомлення всередині застосунку. Push-повідомлення при закритій програмі ще не реалізовані.",12,MUTED,false);
+  }
+
+  private void remote(String action,JSONObject data,String token,java.util.function.Consumer<JSONObject> success){
+    if(doingRequest){message("Попередня дія ще виконується");return;}doingRequest=true;
+    pool.execute(()->{
+      try{JSONObject result=new ApiClient(this).call(action,data,token);runOnUiThread(()->{doingRequest=false;success.accept(result);});}
+      catch(Exception e){runOnUiThread(()->{
+        doingRequest=false;message(e.getMessage());
+        if(e instanceof ApiClient.ApiException&&((ApiClient.ApiException)e).auth){secure.clear();page="login";draw();}
+      });}
+    });
+  }
+  private void refresh(){if(secure.token().isEmpty())return;
+    remote("state",new JSONObject(),secure.token(),r->{
+      JSONArray oldEvents=state.optJSONArray("events"),newEvents=r.optJSONArray("events");
+      String before=oldEvents!=null&&oldEvents.length()>0?oldEvents.optJSONObject(0).optString("id"):"";
+      String after=newEvents!=null&&newEvents.length()>0?newEvents.optJSONObject(0).optString("id"):"";
+      state=r;getPreferences(MODE_PRIVATE).edit().putString("last_state",state.toString()).apply();
+      if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
+      JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
+      if(page.equals("home")||page.equals("history")||page.equals("users")||page.equals("votes")||page.equals("activity"))draw();
+      if(isCashier()&&secure.deviceToken().isEmpty())registerDeviceKey();
+    });
+  }
+  private void logout(){
+    JSONObject nothing=new JSONObject();String token=secure.token();
+    // Local unsynced records stay tied to their owner. Never delete them on logout.
+    secure.clear();settings.clearUser();state=new JSONObject();getPreferences(MODE_PRIVATE).edit().remove("last_state").apply();
+    page="login";draw();
+    pool.execute(()->{try{new ApiClient(this).call("logout",nothing,token);}catch(Exception ignored){}});
+  }
+  private void go(String target){page=target;draw();}
+  private static String today(){return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());}
+  private static String money(long cents){return String.format(new Locale("uk","UA"),"%,.2f",cents/100.0);}
+  private static String roleName(String role){return role.equals("CASHIER")?"Касир":role.equals("RESERVE")?"Резервний адміністратор":"Учасник";}
+  private void prompt(String title,java.util.function.Consumer<String> cb){EditText e=new EditText(this);
+    new AlertDialog.Builder(this).setTitle(title).setView(e).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Готово",(d,w)->cb.accept(e.getText().toString())).show();}
+  private void message(String msg){Toast.makeText(this,msg==null?"Невідома помилка":msg,Toast.LENGTH_LONG).show();}
+  private int dp(int value){return Math.round(getResources().getDisplayMetrics().density*value);}
+  private GradientDrawable background(int color,int radius){GradientDrawable g=new GradientDrawable();g.setColor(color);g.setCornerRadius(dp(radius));return g;}
+  private LinearLayout row(){LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);row.setGravity(Gravity.CENTER_VERTICAL);return row;}
+  private LinearLayout card(LinearLayout parent){LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(16),dp(13),dp(16),dp(13));box.setBackground(background(Color.WHITE,15));
+    LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=dp(10);parent.addView(box,params);return box;}
+  private TextView text(String s,int size,int color,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextColor(color);t.setTextSize(size);if(bold)t.setTypeface(null,Typeface.BOLD);t.setPadding(dp(3),dp(3),dp(3),dp(3));return t;}
+  private void textInto(LinearLayout dest,String s,int size,int color,boolean bold){dest.addView(text(s,size,color,bold));}
+  private void spacer(LinearLayout dest,int height){View v=new View(this);dest.addView(v,new LinearLayout.LayoutParams(1,dp(height)));}
+  private EditText input(LinearLayout dest,String label,String initial,boolean password){
+    textInto(dest,label,13,MUTED,true);EditText e=new EditText(this);e.setText(initial);e.setTextSize(15);e.setSingleLine(!label.contains("Призначення")&&!label.contains("причина")&&!label.contains("запитання"));
+    e.setPadding(dp(12),dp(10),dp(12),dp(10));e.setBackground(background(Color.WHITE,10));
+    if(password)e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+    else if(label.contains("Сума"))e.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL);
+    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(10);dest.addView(e,lp);return e;
+  }
+  private void button(LinearLayout dest,String label,Runnable action,boolean prominent){
+    Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(13);b.setTypeface(null,Typeface.BOLD);
+    b.setTextColor(prominent?Color.WHITE:NAVY);b.setBackgroundTintList(ColorStateList.valueOf(prominent?TEAL:0xffe5efee));b.setMinHeight(dp(46));
+    LinearLayout.LayoutParams p=dest.getOrientation()==LinearLayout.HORIZONTAL?new LinearLayout.LayoutParams(0,dp(52),1f):new LinearLayout.LayoutParams(-1,dp(52));
+    p.setMargins(dp(2),dp(3),dp(2),dp(4));dest.addView(b,p);b.setOnClickListener(v->action.run());
+  }
+}
