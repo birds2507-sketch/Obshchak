@@ -689,24 +689,57 @@ public class MainActivity extends ComponentActivity {
       button(layout,"＋ Сфотографувати чек",()->takePhoto(item.optString("id")),false);
       button(layout,"＋ Додати чек із галереї",()->pickPhoto(item.optString("id")),false);
     }
-    JSONArray comments=state.optJSONArray("comments");
-    if(comments!=null)for(int i=0;i<comments.length();i++){
-      JSONObject c=comments.optJSONObject(i);if(c!=null&&c.optString("ledger_id").equals(item.optString("id")))textInto(layout,"💬 "+nameOf(c.optString("author_id"))+": "+c.optString("message"),13,NAVY,false);
+    final Map<String,TextView> statuses=new HashMap<>();
+    if(item.optString("kind").equals("OUT")){
+      textInto(layout,"Запитання та відповіді · видно всім учасникам",15,NAVY,true);
+      LinearLayout thread=new LinearLayout(this);
+      thread.setOrientation(LinearLayout.VERTICAL);
+      layout.addView(thread,new LinearLayout.LayoutParams(-1,-2));
+      JSONArray comments=state.optJSONArray("comments");
+      if(comments!=null)for(int i=0;i<comments.length();i++){
+        JSONObject c=comments.optJSONObject(i);
+        if(c!=null && c.optString("ledger_id").equals(item.optString("id"))){
+          LinearLayout chat=card(thread);
+          chat.setBackground(background(0xfff0f5f6,12));
+          textInto(chat,nameOf(c.optString("author_id")),12,TEAL,true);
+          textInto(chat,c.optString("message"),14,NAVY,false);
+          textInto(chat,c.optString("created_at"),11,MUTED,false);
+        }
+      }
+      for(LocalStore.PendingComment pending:outbox.comments(settings.userId(),false))
+        if(pending.ledger.equals(item.optString("id")))
+          showPendingChat(thread,pending,statuses);
+      EditText comment=input(layout,"Написати коментар (видно всім)","",false);
+      comment.setHint("✎ Натисніть тут і напишіть запитання або відповідь…");
+      comment.setMinHeight(dp(95));
+      comment.setGravity(Gravity.TOP|Gravity.START);
+      comment.setSingleLine(false);
+      comment.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+      comment.setPadding(dp(14),dp(13),dp(14),dp(13));
+      GradientDrawable commentBg=background(0xfff6fbfd,12);
+      commentBg.setStroke(dp(2),TEAL);
+      comment.setBackground(commentBg);
+      button(layout,"➤ Надіслати",()->{
+        String messageText=comment.getText().toString().trim();
+        if(messageText.isEmpty()){comment.setError("Спочатку напишіть повідомлення");return;}
+        if(messageText.length()>1500){comment.setError("Максимум 1500 символів");return;}
+        String id=UUID.randomUUID().toString();
+        try{
+          outbox.addComment(id,settings.userId(),item.optString("id"),messageText);
+          LocalStore.PendingComment pending=new LocalStore.PendingComment();
+          pending.id=id;pending.owner=settings.userId();pending.ledger=item.optString("id");
+          pending.message=messageText;pending.status=LocalStore.PENDING;pending.error="";
+          showPendingChat(thread,pending,statuses);
+          comment.setText("");
+          comment.clearFocus();
+          message("✓ Збережено на телефоні. Надсилання автоматичне.");
+          if(secure.deviceToken().isEmpty())registerDeviceKey();
+          else QueueSyncWorker.schedule(this);
+        }catch(Exception error){
+          message("Не вдалося зберегти: "+error.getMessage());
+        }
+      },true);
     }
-    EditText comment=input(layout,"Запитання або відповідь (видно всім)","",false);
-    comment.setHint("✎ Натисніть тут і напишіть запитання або відповідь…");
-    comment.setMinHeight(dp(95));
-    comment.setGravity(Gravity.TOP|Gravity.START);
-    comment.setSingleLine(false);
-    comment.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-    comment.setPadding(dp(14),dp(13),dp(14),dp(13));
-    GradientDrawable commentBg=background(0xfff6fbfd,12);
-    commentBg.setStroke(dp(2),TEAL);
-    comment.setBackground(commentBg);
-    button(layout,"Надіслати коментар",()->{if(comment.getText().toString().trim().isEmpty())return;
-      JSONObject d=new JSONObject();try{d.put("ledgerId",item.optString("id"));d.put("message",comment.getText().toString());}catch(Exception ignored){}
-      remote("comment",d,secure.token(),r->{message("Коментар опубліковано");refresh();});
-    },true);
     if(isCashier()&&(item.optString("kind").equals("OUT")||item.optString("kind").equals("IN")))
       button(layout,"↶ Сторнувати помилкову операцію",()->prompt("Причина сторнування",reason->{
         JSONObject d=new JSONObject();try{d.put("id",item.optString("id"));d.put("reason",reason);}catch(Exception ignored){}
@@ -714,7 +747,40 @@ public class MainActivity extends ComponentActivity {
           .setNegativeButton("Ні",null).setPositiveButton("Так",(di,w)->remote("reverseTransaction",d,secure.token(),r->{message("Сторнування створено");refresh();})).show();
       }),false);
     ScrollView v=new ScrollView(this);v.addView(layout);
-    new AlertDialog.Builder(this).setTitle("Деталі операції").setView(v).setPositiveButton("Закрити",null).show();
+    AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Деталі операції")
+      .setView(v).setPositiveButton("Закрити",null).create();
+    Handler statusHandler=new Handler(Looper.getMainLooper());
+    Runnable syncStatus=new Runnable(){
+      @Override public void run(){
+        if(!dialog.isShowing())return;
+        if(!statuses.isEmpty()){
+          for(LocalStore.PendingComment c:outbox.comments(settings.userId(),true)){
+            TextView label=statuses.get(c.id);
+            if(label!=null)label.setText(commentStatusLabel(c.status)+
+                (c.error==null||c.error.isEmpty()?"":" · "+c.error));
+          }
+        }
+        statusHandler.postDelayed(this,1800);
+      }
+    };
+    dialog.setOnDismissListener(d->statusHandler.removeCallbacks(syncStatus));
+    dialog.show();
+    statusHandler.postDelayed(syncStatus,900);
+  }
+
+  private void showPendingChat(LinearLayout thread,LocalStore.PendingComment c,Map<String,TextView> statuses){
+    LinearLayout chat=card(thread);chat.setBackground(background(0xffeaf6f4,12));
+    textInto(chat,"Ви",12,TEAL,true);
+    textInto(chat,c.message,14,NAVY,false);
+    TextView status=text(commentStatusLabel(c.status),11,MUTED,true);chat.addView(status);
+    statuses.put(c.id,status);
+    if(LocalStore.FAILED.equals(c.status)||LocalStore.AUTH.equals(c.status))
+      button(chat,"Повторити надсилання",()->{
+        outbox.retryComment(c.id);
+        status.setText(commentStatusLabel(LocalStore.PENDING));
+        if(secure.deviceToken().isEmpty())registerDeviceKey();
+        else QueueSyncWorker.schedule(this);
+      },false);
   }
   private String nameOf(String id){JSONArray users=state.optJSONArray("users");if(users!=null)for(int i=0;i<users.length();i++){JSONObject u=users.optJSONObject(i);if(id.equals(u.optString("id")))return u.optString("name");}return "Учасник";}
   private void fetchReceipt(String id){JSONObject d=new JSONObject();try{d.put("id",id);}catch(Exception ignored){}
