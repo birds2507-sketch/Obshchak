@@ -1,7 +1,7 @@
 plugins { id 'com.android.application' }
 
-// Inject the deployed /exec URL through GitHub Actions, not source control.
-def defaultServerUrl = (System.getenv('OBSHCHAK_SCRIPT_URL') ?: '').trim()
+// Group deployment URL ships inside the APK; personal login is still required.
+def defaultServerUrl = (System.getenv('OBSHCHAK_SCRIPT_URL') ?: 'https://script.google.com/macros/s/AKfycbzwv3CcTdpoeoOuD4fZ-AYwwpKCNCNLB4OE2gYb-0Ucbrnxz1lQTk1eFOeiY_8QYQTC/exec').trim()
 if (defaultServerUrl && !(defaultServerUrl.startsWith('https://script.google.com/macros/s/') && defaultServerUrl.endsWith('/exec'))) {
     throw new GradleException('OBSHCHAK_SCRIPT_URL must be a Google Apps Script /exec URL')
 }
