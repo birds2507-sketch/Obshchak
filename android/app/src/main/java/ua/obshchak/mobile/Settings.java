@@ -7,7 +7,9 @@ import java.util.UUID;
 final class Settings {
   private final SharedPreferences p;
   Settings(Context c){p=c.getSharedPreferences("obshchak_settings",Context.MODE_PRIVATE);}
-  String url(){return p.getString("url","");}
+  // The APK carries the common group endpoint; a PIN-protected override is optional.
+  // An already saved endpoint from a previous installation takes precedence.
+  String url(){String saved=p.getString("url","");return saved.isEmpty()?BuildConfig.DEFAULT_SERVER_URL:saved;}
   void url(String value){p.edit().putString("url",value).apply();}
   String deviceId(){String id=p.getString("device_id","");if(id.isEmpty()){
     id=UUID.randomUUID().toString();p.edit().putString("device_id",id).apply();}return id;}
