@@ -29,10 +29,6 @@ jobs:
         env:
           OBSHCHAK_SCRIPT_URL: ${{ secrets.OBSHCHAK_SCRIPT_URL }}
         run: |
-          if [ -z "$OBSHCHAK_SCRIPT_URL" ]; then
-            echo "::error::Set repository Actions secret OBSHCHAK_SCRIPT_URL to your Apps Script /exec deployment URL."
-            exit 1
-          fi
           gradle --no-daemon assembleDebug
       - name: Upload installable debug APK
         uses: actions/upload-artifact@v4
