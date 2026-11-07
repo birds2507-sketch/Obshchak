@@ -40,10 +40,13 @@ function doPost(e) {
     if (!packet || typeof packet.action !== 'string') throw new Error('Не вказана дія');
     // Login does not require token; all other calls pass through existing auth_ and role checks.
     var result;
-    if (packet.action==='syncTransaction' || packet.action==='syncReceipt') {
+    if (packet.action==='syncTransaction' || packet.action==='syncReceipt' || packet.action==='syncComment') {
       var deviceUser=authDevice_(String(packet.token||''));
-      result=withLock_(function(){return packet.action==='syncTransaction' ?
-        addTransaction_(deviceUser,packet.data||{}):addReceipt_(deviceUser,packet.data||{});});
+      result=withLock_(function(){
+        if(packet.action==='syncTransaction')return addTransaction_(deviceUser,packet.data||{});
+        if(packet.action==='syncReceipt')return addReceipt_(deviceUser,packet.data||{});
+        return comment_(deviceUser,packet.data||{});
+      });
     } else result=api(packet.action, packet.data || {}, packet.token || '');
     output = {ok:true, result:result};
   } catch(err) {
@@ -130,7 +133,7 @@ function ensureDeviceSheet_() {
   return sh;
 }
 function registerDevice_(user,data){
-  requireRole_(user,['CASHIER']);
+  // Any active member may upload only their own comments; ledger writes still require CASHIER.
   var deviceId=String(data.deviceId||'');
   if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(deviceId))throw new Error('Неправильний ID пристрою');
   ensureDeviceSheet_();
@@ -151,8 +154,8 @@ function authDevice_(token){
   var rec=all_('DeviceTokens').filter(function(x){return x.token_hash===hash && x.revoked==='0';})[0];
   if(!rec || Number(rec.expires_ms)<Date.now())throw new Error('Потрібен повторний вхід: ключ синхронізації закінчився');
   var user=findUser_(rec.user_id);
-  if(!user || user.active!=='1' || user.role!=='CASHIER' || user.version!==rec.version)
-    throw new Error('Потрібен повторний вхід: права касира змінилися');
+  if(!user || user.active!=='1' || user.version!==rec.version)
+    throw new Error('Потрібен повторний вхід: права або доступ учасника змінилися');
   return user;
 }
 
@@ -398,10 +401,22 @@ function getReceipt_(user,data){
 }
 function comment_(user,data){
   var id=String(data.ledgerId||''),msg=needed_(data.message,'Запитання або відповідь',CFG_.MAX_MESSAGE);
+  var clientId=String(data.clientId||'');
+  if(clientId && !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(clientId))throw new Error('Невірний ID повідомлення');
+  // Stable ID makes retries after ambiguous network failures safe.
+  if(clientId){
+    var duplicate=all_('Comments').filter(function(c){return c.id===clientId;})[0];
+    if(duplicate){
+      if(duplicate.ledger_id!==id || duplicate.author_id!==user.id || duplicate.message!==msg)
+        throw new Error('Повторний ID повідомлення з іншими даними');
+      return {ok:true,id:clientId,alreadyExists:true};
+    }
+  }
   if(!all_('Ledger').some(function(r){return r.id===id&&r.kind==='OUT';}))throw new Error('Витрату не знайдено');
-  append_('Comments',[Utilities.getUuid(),id,user.id,msg,now_()]);
+  var newId=clientId||Utilities.getUuid();
+  append_('Comments',[newId,id,user.id,msg,now_()]);
   event_('COMMENT',user.name+' залишив(ла) коментар щодо витрати',user.id,id);
-  return {ok:true};
+  return {ok:true,id:newId};
 }
 function invite_(user,data){
   requireRole_(user,['CASHIER','RESERVE']);
