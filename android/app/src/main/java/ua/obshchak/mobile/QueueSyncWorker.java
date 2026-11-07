@@ -65,6 +65,28 @@ public class QueueSyncWorker extends Worker {
         store.status(item.id,LocalStore.PENDING,"Немає відповіді Google. Буде повторна спроба.");retry=true;break;
       }
     }
+    // Offline comments belong to every active member, not just the cashier.
+    // Retry only with the stable client UUID; the server rejects conflicting duplicates.
+    if(!retry)for(LocalStore.PendingComment item:store.comments(s.userId(),false)){
+      if(isStopped())return Result.retry();
+      if(LocalStore.FAILED.equals(item.status))continue;
+      try{
+        JSONObject args=new JSONObject().put("clientId",item.id)
+          .put("ledgerId",item.ledger).put("message",item.message);
+        api.call("syncComment",args,token);
+        store.commentStatus(item.id,LocalStore.SYNCED,"");
+      }catch(ApiClient.ApiException e){
+        if(e.auth){
+          store.commentStatus(item.id,LocalStore.AUTH,"Сеанс синхронізації завершився. Увійдіть повторно.");
+          return Result.success();
+        }
+        if(e.retry){store.commentStatus(item.id,LocalStore.PENDING,e.getMessage());retry=true;break;}
+        store.commentStatus(item.id,LocalStore.FAILED,e.getMessage());
+      }catch(Exception e){
+        store.commentStatus(item.id,LocalStore.PENDING,"Передача не завершена. Буде повторна спроба.");
+        retry=true;break;
+      }
+    }
     return retry?Result.retry():Result.success();
   }
 }
