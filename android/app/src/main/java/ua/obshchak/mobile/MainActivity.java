@@ -83,7 +83,7 @@ public class MainActivity extends ComponentActivity {
     try{state=new JSONObject(cache);}catch(Exception ignored){}
     if(b!=null){page=b.getString("page","home");formKind=b.getString("formKind","OUT");}
     if(settings.userId().isEmpty()||secure.token().isEmpty())page="login";
-    else {if(isCashier()&&!secure.deviceToken().isEmpty()){
+    else {if(!secure.deviceToken().isEmpty()){
         outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
       }}
     draw();if(!page.equals("login"))refresh();
@@ -110,13 +110,13 @@ public class MainActivity extends ComponentActivity {
 
     if(page.equals("login")||page.equals("password")){
       LinearLayout loginHeader=row();screen.addView(loginHeader);
-      TextView loginLogo=text("₴  ОБЩАК",26,TEAL,true);
+      TextView loginLogo=text("₴  ОБЩАК ver."+BuildConfig.VERSION_NAME,21,TEAL,true);
       loginHeader.addView(loginLogo,new LinearLayout.LayoutParams(0,-2,1f));
       TextView loginGear=text("⚙",27,TEAL,true);
       loginGear.setGravity(Gravity.RIGHT);loginGear.setContentDescription("Налаштування підключення");
       loginHeader.addView(loginGear,new LinearLayout.LayoutParams(dp(56),dp(48)));
       loginGear.setOnClickListener(v->askEndpointPin());
-      textInto(screen,"Спільна каса · Android",13,MUTED,false);
+      textInto(screen,"Облік спільної каси «Тупіка»",13,MUTED,false);
       spacer(screen,18);
       if(page.equals("login"))drawLogin();else drawChangePassword();
       return;
@@ -138,14 +138,14 @@ public class MainActivity extends ComponentActivity {
 
   private void topBar(LinearLayout root){
     LinearLayout bar=row();bar.setPadding(dp(12),dp(7),dp(12),dp(9));
-    bar.setBackgroundColor(Color.WHITE);root.addView(bar,new LinearLayout.LayoutParams(-1,dp(66)));
+    bar.setBackgroundColor(Color.WHITE);root.addView(bar,new LinearLayout.LayoutParams(-1,dp(78)));
     TextView menu=text("☰",26,NAVY,true);
     menu.setGravity(Gravity.CENTER);bar.addView(menu,new LinearLayout.LayoutParams(dp(45),-1));
     menu.setOnClickListener(v->showMenu());
     LinearLayout title=new LinearLayout(this);title.setOrientation(LinearLayout.VERTICAL);
     bar.addView(title,new LinearLayout.LayoutParams(0,-2,1f));
-    textInto(title,"ОБЩАК",21,NAVY,true);
-    textInto(title,"Спільна каса",11,MUTED,false);
+    textInto(title,"ОБЩАК ver."+BuildConfig.VERSION_NAME,19,NAVY,true);
+    textInto(title,"Облік спільної каси «Тупіка»",11,MUTED,false);
     title.setContentDescription("Повернутися на головну");
     title.setOnClickListener(v->go("home"));
     TextView bell=text("♧",24,TEAL,true);bell.setGravity(Gravity.CENTER);
@@ -304,12 +304,13 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void registerDeviceKey(){
-    if(!isCashier()||secure.token().isEmpty())return;
+    if(secure.token().isEmpty())return;
     JSONObject d=new JSONObject();try{d.put("deviceId",settings.deviceId());}catch(Exception ignored){}
     remote("registerDevice",d,secure.token(),r->{try{
       secure.setDeviceToken(r.getString("deviceToken"));
-      outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
-      message("Фонову синхронізацію підключено на 30 днів");
+      outbox.resumeAuth(settings.userId());outbox.resumeCommentAuth(settings.userId());
+      QueueSyncWorker.schedule(this);
+      message("Синхронізацію підключено на 30 днів");
     }catch(Exception e){message("Помилка ключа синхронізації: "+e.getMessage());}});
   }
   private void drawChangePassword(){
@@ -608,12 +609,13 @@ public class MainActivity extends ComponentActivity {
   private void drawQueue(){
     textInto(screen,"Черга синхронізації",23,NAVY,true);
     button(screen,"⟳ Спробувати синхронізувати",()->{
-      if(isCashier()&&secure.deviceToken().isEmpty()){registerDeviceKey();return;}
-      outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);message("Передачу заплановано за наявності мережі");
+      if(secure.deviceToken().isEmpty()){registerDeviceKey();return;}
+      outbox.resumeAuth(settings.userId());outbox.resumeCommentAuth(settings.userId());
+      QueueSyncWorker.schedule(this);message("Передачу заплановано за наявності мережі");
     },true);
-    if(isCashier())button(screen,"🔑 Оновити дозвіл фонової синхронізації",this::registerDeviceKey,false);
+    button(screen,"🔑 Оновити дозвіл фонової синхронізації",this::registerDeviceKey,false);
     java.util.List<LocalStore.Entry> list=outbox.list(settings.userId(),true);
-    if(list.isEmpty()){textInto(screen,"Локальних записів ще немає",15,MUTED,false);return;}
+    if(list.isEmpty() && outbox.comments(settings.userId(),true).isEmpty())textInto(screen,"Локальних записів ще немає",15,MUTED,false);
     for(LocalStore.Entry e:list){
       LinearLayout box=card(screen);JSONObject tx=e.body().optJSONObject("tx");
       String title=tx==null?"📎 Чек до попередньої витрати":tx.optString("kind").equals("IN")?"Прихід":"Розхід";
@@ -626,9 +628,28 @@ public class MainActivity extends ComponentActivity {
         if(photos.length()>0){JSONObject f=photos.optJSONObject(0);
           button(box,"Переглянути збережений чек",()->openLocal(f),false);}}
     }
-    textInto(screen,"Завантажено означає, що Google підтвердив збереження. Збережені оригінали чеків залишаються в пам'яті застосунку.",12,MUTED,false);
+    for(LocalStore.PendingComment c:outbox.comments(settings.userId(),true)){
+      LinearLayout box=card(screen);
+      textInto(box,"💬 Коментар: "+c.message,14,NAVY,true);
+      textInto(box,"Статус: "+commentStatusLabel(c.status),12,LocalStore.SYNCED.equals(c.status)?TEAL:MUTED,true);
+      if(c.error!=null&&!c.error.isEmpty())textInto(box,c.error,12,0xffb34a45,false);
+      if(LocalStore.FAILED.equals(c.status)||LocalStore.AUTH.equals(c.status))
+        button(box,"Повторити надсилання",()->{
+          outbox.retryComment(c.id);
+          if(secure.deviceToken().isEmpty())registerDeviceKey();
+          else QueueSyncWorker.schedule(this);
+          draw();
+        },false);
+    }
+    textInto(screen,"Завантажено означає, що Google підтвердив збереження. Оригінали чеків залишаються на телефоні.",12,MUTED,false);
   }
   private String labelStatus(String status){switch(status){case LocalStore.PENDING:return "Очікує інтернету / відправлення";case LocalStore.SYNCED:return "Завантажено в Google";case LocalStore.AUTH:return "Потрібен повторний вхід";default:return "Потребує уваги";}}
+  private String commentStatusLabel(String status){
+    if(LocalStore.SYNCED.equals(status))return "✓ Відправлено всім";
+    if(LocalStore.PENDING.equals(status))return "◷ Збережено на телефоні · очікує передачі";
+    if(LocalStore.AUTH.equals(status))return "Потрібен повторний вхід";
+    return "⚠ Не відправлено · перевірте причину";
+  }
   private void openLocal(JSONObject file){try{
     File f=new File(file.getString("originalPath"));Uri u=FileProvider.getUriForFile(this,getPackageName()+".files",f);
     Intent i=new Intent(Intent.ACTION_VIEW).setDataAndType(u,file.optString("originalMime",file.optString("mime","image/jpeg"))).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -837,7 +858,7 @@ public class MainActivity extends ComponentActivity {
       if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
       JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
       if(changed&&(page.equals("home")||page.equals("history")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity")))draw();
-      if(isCashier()&&secure.deviceToken().isEmpty())registerDeviceKey();
+      if(secure.deviceToken().isEmpty())registerDeviceKey();
     });
   }
   private void logout(){
