@@ -11,10 +11,49 @@ import java.util.List;
 /** Durable outbox; never removes local source receipt files automatically. */
 final class LocalStore extends SQLiteOpenHelper {
   static final String PENDING="PENDING", SYNCED="SYNCED", AUTH="AUTH_REQUIRED", FAILED="NEEDS_ATTENTION";
-  LocalStore(Context c){super(c,"obshchak_outbox.db",null,1);}
-  @Override public void onCreate(SQLiteDatabase db){db.execSQL("CREATE TABLE outbox(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,payload TEXT NOT NULL,ledger_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '')");}
-  @Override public void onUpgrade(SQLiteDatabase db,int oldVersion,int newVersion){throw new IllegalStateException("Missing migration; keep user's outbox");}
+  LocalStore(Context c){super(c,"obshchak_outbox.db",null,2);}
+  @Override public void onCreate(SQLiteDatabase db){
+    db.execSQL("CREATE TABLE outbox(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,payload TEXT NOT NULL,ledger_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '')");
+    createComments(db);
+  }
+  private void createComments(SQLiteDatabase db){
+    db.execSQL("CREATE TABLE IF NOT EXISTS comment_outbox(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,ledger_id TEXT NOT NULL,message TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '')");
+  }
+  @Override public void onUpgrade(SQLiteDatabase db,int oldVersion,int newVersion){
+    if(oldVersion==1&&newVersion>=2)createComments(db);
+    else throw new IllegalStateException("Unknown migration; keep user's outbox");
+  }
   void add(String id,String owner,String payload){ContentValues v=new ContentValues();v.put("id",id);v.put("owner_id",owner);v.put("payload",payload);v.put("status",PENDING);v.put("created_at",System.currentTimeMillis());getWritableDatabase().insertOrThrow("outbox",null,v);}
+  static class PendingComment {
+    String id,owner,ledger,message,status,error;long created;
+  }
+  void addComment(String id,String owner,String ledger,String text){
+    ContentValues v=new ContentValues();v.put("id",id);v.put("owner_id",owner);v.put("ledger_id",ledger);
+    v.put("message",text);v.put("status",PENDING);v.put("created_at",System.currentTimeMillis());
+    getWritableDatabase().insertOrThrow("comment_outbox",null,v);
+  }
+  List<PendingComment> comments(String owner,boolean all){
+    List<PendingComment> rows=new ArrayList<>();
+    String filter=all?"":" AND status <> 'SYNCED'";
+    try(Cursor c=getReadableDatabase().rawQuery("SELECT id,owner_id,ledger_id,message,status,created_at,error FROM comment_outbox WHERE owner_id=?"+filter+" ORDER BY created_at ASC",new String[]{owner})){
+      while(c.moveToNext()){
+        PendingComment e=new PendingComment();
+        e.id=c.getString(0);e.owner=c.getString(1);e.ledger=c.getString(2);
+        e.message=c.getString(3);e.status=c.getString(4);
+        e.created=c.getLong(5);e.error=c.getString(6);rows.add(e);
+      }
+    }
+    return rows;
+  }
+  void commentStatus(String id,String status,String error){
+    ContentValues v=new ContentValues();v.put("status",status);v.put("error",error==null?"":error);
+    getWritableDatabase().update("comment_outbox",v,"id=?",new String[]{id});
+  }
+  void retryComment(String id){commentStatus(id,PENDING,"");}
+  void resumeCommentAuth(String owner){
+    ContentValues v=new ContentValues();v.put("status",PENDING);v.put("error","");
+    getWritableDatabase().update("comment_outbox",v,"owner_id=? AND status=?",new String[]{owner,AUTH});
+  }
   void addReceiptOnly(String id,String owner,String ledger,JSONObject body){
     ContentValues v=new ContentValues();v.put("id",id);v.put("owner_id",owner);v.put("payload",body.toString());
     v.put("ledger_id",ledger);v.put("status",PENDING);v.put("created_at",System.currentTimeMillis());
