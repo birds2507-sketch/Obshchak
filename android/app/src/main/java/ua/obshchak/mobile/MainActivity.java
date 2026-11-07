@@ -354,6 +354,7 @@ public class MainActivity extends ComponentActivity {
 
     JSONArray ledger=state.optJSONArray("ledger");
     Map<String,Integer> receiptCounts=receiptCounts();
+    Map<String,Long> balances=balancesAfterOperations();
     LinearLayout recent=card(screen);
     if(ledger==null||ledger.length()==0){
       textInto(recent,"Операцій поки немає",14,MUTED,false);
@@ -374,8 +375,11 @@ public class MainActivity extends ComponentActivity {
         textInto(detail,x.optString("purpose").isEmpty()?(kind.equals("IN")?"Внесок":"Витрата"):x.optString("purpose"),14,NAVY,true);
         String extra=x.optString("person_name");
         if(extra.isEmpty())extra=x.optString("category");
-        textInto(detail,x.optString("date")+(extra.isEmpty()?"":" · "+extra),11,MUTED,false);
+        textInto(detail,displayDate(x.optString("date")),13,NAVY,true);
+        if(!extra.isEmpty())textInto(detail,extra,11,MUTED,false);
         if(kind.equals("OUT"))receiptTag(detail,receiptCounts.getOrDefault(x.optString("id"),0),x.optString("no_receipt_reason"));
+        Long after=balances.get(x.optString("id"));
+        if(after!=null)textInto(detail,"Залишок: "+money(after)+" ₴",12,TEAL,true);
         TextView amount=text((x.optLong("amount")>=0?"+":"−")+money(Math.abs(x.optLong("amount")))+" ₴",15,x.optLong("amount")>=0?0xff168255:0xffb63f4c,true);
         amount.setGravity(Gravity.RIGHT);item.addView(amount);
         item.setOnClickListener(v->showDetail(x));
@@ -428,10 +432,39 @@ public class MainActivity extends ComponentActivity {
       int count=receiptCounts.getOrDefault(tx.optString("id"),0);
       LinearLayout c=card(screen);
       textInto(c,tx.optString("purpose")+" · "+money(Math.abs(tx.optLong("amount")))+" ₴",15,NAVY,true);
-      textInto(c,tx.optString("date"),12,MUTED,false);
+      textInto(c,displayDate(tx.optString("date")),14,NAVY,true);
       receiptTag(c,count,tx.optString("no_receipt_reason"));
       button(c,"Відкрити витрату й чеки",()->showDetail(tx),false);
     }
+  }
+
+  private static String displayDate(String original){
+    if(original!=null && original.matches("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
+      return original.substring(8,10)+"."+original.substring(5,7)+"."+original.substring(0,4);
+    return original==null?"":original;
+  }
+
+  private Map<String,Long> balancesAfterOperations(){
+    Map<String,Long> result=new HashMap<>();
+    JSONArray ledger=state.optJSONArray("ledger");
+    if(ledger==null)return result;
+    // Preferred: balance calculated by Apps Script in append-only spreadsheet order.
+    for(int i=0;i<ledger.length();i++){
+      JSONObject record=ledger.optJSONObject(i);if(record==null)continue;
+      if(record.has("balance_after") && !record.isNull("balance_after"))
+        result.put(record.optString("id"),record.optLong("balance_after"));
+    }
+    if(result.size()==ledger.length())return result;
+    // For an older deployment, derive from the displayed reverse-chronological ledger.
+    // Deploy updated gas/Code.gs for authoritative ordering when entries share a timestamp.
+    long current=state.optJSONObject("totals")!=null?state.optJSONObject("totals").optLong("balance"):0L;
+    for(int i=0;i<ledger.length();i++){
+      JSONObject record=ledger.optJSONObject(i);if(record==null)continue;
+      String id=record.optString("id");
+      if(!result.containsKey(id))result.put(id,current);
+      current-=record.optLong("amount");
+    }
+    return result;
   }
 
   private Map<String,Integer> receiptCounts(){
@@ -606,19 +639,26 @@ public class MainActivity extends ComponentActivity {
     textInto(screen,"Прихід, розхід і чеки",23,NAVY,true);
     JSONArray ledger=state.optJSONArray("ledger");
     Map<String,Integer> receiptCounts=receiptCounts();
+    Map<String,Long> balances=balancesAfterOperations();
     if(ledger==null||ledger.length()==0){textInto(screen,"Операцій немає або дані не завантажені",14,MUTED,false);return;}
     for(int i=0;i<Math.min(ledger.length(),150);i++){
       JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
       LinearLayout c=card(screen);String kind=x.optString("kind"),title=kind.equals("IN")?"＋ Прихід":kind.equals("OUT")?"− Розхід":"↶ Коригування";
       textInto(c,title+"  "+money(Math.abs(x.optLong("amount")))+" ₴",16,kind.equals("OUT")?0xffb84d46:TEAL,true);
-      textInto(c,x.optString("date")+" · "+x.optString("purpose"),13,MUTED,false);
+      textInto(c,displayDate(x.optString("date")),15,NAVY,true);
+      textInto(c,x.optString("purpose"),13,MUTED,false);
       if(kind.equals("OUT"))receiptTag(c,receiptCounts.getOrDefault(x.optString("id"),0),x.optString("no_receipt_reason"));
+      Long after=balances.get(x.optString("id"));
+      if(after!=null)textInto(c,"Залишок після операції: "+money(after)+" ₴",13,TEAL,true);
       button(c,"Деталі та запитання",()->showDetail(x),false);
     }
   }
   private void showDetail(JSONObject item){
     LinearLayout layout=new LinearLayout(this);layout.setOrientation(LinearLayout.VERTICAL);layout.setPadding(dp(16),dp(10),dp(16),dp(8));
     textInto(layout,item.optString("purpose")+" · "+money(Math.abs(item.optLong("amount")))+" грн",18,NAVY,true);
+    textInto(layout,"Дата: "+displayDate(item.optString("date")),15,NAVY,true);
+    Long after=balancesAfterOperations().get(item.optString("id"));
+    if(after!=null)textInto(layout,"Залишок після операції: "+money(after)+" ₴",14,TEAL,true);
     JSONArray receipts=state.optJSONArray("receipts");
     if(receipts!=null)for(int i=0;i<receipts.length();i++){
       JSONObject r=receipts.optJSONObject(i);if(r!=null&&r.optString("ledger_id").equals(item.optString("id")))
