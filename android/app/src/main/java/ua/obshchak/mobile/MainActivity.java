@@ -58,9 +58,12 @@ public class MainActivity extends ComponentActivity {
   private ActivityResultLauncher<Uri> cameraLauncher;
   private ActivityResultLauncher<String[]> pickerLauncher;
   private boolean doingRequest=false;
+  private long lastSuccessfulRefresh=0L;
+  private int endpointPinFailures=0;
+  private long endpointPinBlockedUntil=0L;
   private final Handler pollHandler=new Handler(Looper.getMainLooper());
   private final Runnable pollTask=new Runnable(){@Override public void run(){
-    if(!secure.token().isEmpty()&&!doingRequest&&page.equals("home"))refresh();
+    if(!secure.token().isEmpty()&&!doingRequest&&page.equals("home") && android.os.SystemClock.elapsedRealtime()-lastSuccessfulRefresh>=60000)refresh();
     pollHandler.postDelayed(this,60000);
   }};
 
@@ -106,7 +109,13 @@ public class MainActivity extends ComponentActivity {
     scroll.addView(screen);
 
     if(page.equals("login")||page.equals("password")){
-      textInto(screen,"₴  ОБЩАК",26,TEAL,true);
+      LinearLayout loginHeader=row();screen.addView(loginHeader);
+      TextView loginLogo=text("₴  ОБЩАК",26,TEAL,true);
+      loginHeader.addView(loginLogo,new LinearLayout.LayoutParams(0,-2,1f));
+      TextView loginGear=text("⚙",27,TEAL,true);
+      loginGear.setGravity(Gravity.RIGHT);loginGear.setContentDescription("Налаштування підключення");
+      loginHeader.addView(loginGear,new LinearLayout.LayoutParams(dp(56),dp(48)));
+      loginGear.setOnClickListener(v->askEndpointPin());
       textInto(screen,"Спільна каса · Android",13,MUTED,false);
       spacer(screen,18);
       if(page.equals("login"))drawLogin();else drawChangePassword();
@@ -137,6 +146,8 @@ public class MainActivity extends ComponentActivity {
     bar.addView(title,new LinearLayout.LayoutParams(0,-2,1f));
     textInto(title,"ОБЩАК",21,NAVY,true);
     textInto(title,"Спільна каса",11,MUTED,false);
+    title.setContentDescription("Повернутися на головну");
+    title.setOnClickListener(v->go("home"));
     TextView bell=text("♧",24,TEAL,true);bell.setGravity(Gravity.CENTER);
     bar.addView(bell,new LinearLayout.LayoutParams(dp(43),-1));
     bell.setText("♧");bell.setContentDescription("Події та сповіщення");
@@ -185,7 +196,8 @@ public class MainActivity extends ComponentActivity {
     LinearLayout c=card(screen);
     textInto(c,"Обліковий запис",15,NAVY,true);
     textInto(c,settings.username()+" · "+roleName(settings.role()),13,MUTED,false);
-    textInto(c,"Google Apps Script: "+settings.url(),12,MUTED,false);
+    textInto(c,"Підключення до Google: "+(settings.url().isEmpty()?"не налаштовано":"налаштовано"),12,MUTED,false);
+    button(screen,"⚙ Змінити адресу Google (PIN)",this::askEndpointPin,false);
     button(screen,"⟳ Оновити дані",this::refresh,false);
     button(screen,"☁ Черга синхронізації",()->go("queue"),false);
     button(screen,"⇥ Вийти з облікового запису",this::logout,false);
@@ -193,13 +205,16 @@ public class MainActivity extends ComponentActivity {
 
   private void drawLogin(){
     textInto(screen,"Вхід у закриту касу",23,NAVY,true);spacer(screen,12);
-    EditText endpoint=input(screen,"Посилання Google Apps Script (/exec)",settings.url(),false);endpoint.setSingleLine(true);
+    if(settings.url().isEmpty()){
+      LinearLayout info=card(screen);
+      textInto(info,"Щоб підключити касу, натисніть ⚙ угорі праворуч.",14,TEAL,true);
+    }
     EditText user=input(screen,"Логін",getPreferences(MODE_PRIVATE).getString("last_login","kasyr"),false);
     EditText pass=input(screen,"Пароль","",true);
     button(screen,"Увійти",()->{
-      String url=endpoint.getText().toString().trim();if(!url.matches("https://script\\.google\\.com/macros/s/[^/?#]+/exec")){
-        message("Вставте правильне HTTPS-посилання, яке закінчується на /exec");return;}
-      settings.url(url);String login=user.getText().toString().trim();String password=pass.getText().toString();
+      if(!settings.url().matches("https://script\\.google\\.com/macros/s/[^/?#]+/exec")){
+        message("Потрібно налаштувати Google. Натисніть ⚙ і введіть PIN.");return;}
+      String login=user.getText().toString().trim();String password=pass.getText().toString();
       JSONObject d=new JSONObject();try{d.put("login",login);d.put("password",password);}catch(Exception ignored){}
       remote("login",d,"",r->{
         try {
@@ -215,6 +230,79 @@ public class MainActivity extends ComponentActivity {
     },true);
     textInto(screen,"Облікові записи створює касир. Пароль не зберігається на телефоні: лише тимчасовий токен у захищеному сховищі Android.",12,MUTED,false);
   }
+  /** Local settings gate. This PIN is not server authorization; actual access is protected by account login. */
+  private void askEndpointPin(){
+    long now=android.os.SystemClock.elapsedRealtime();
+    if(endpointPinBlockedUntil>now){
+      long seconds=(endpointPinBlockedUntil-now+999)/1000;
+      message("Зачекайте "+seconds+" с перед наступною спробою");return;
+    }
+    EditText pin=new EditText(this);
+    pin.setHint("PIN налаштувань");
+    pin.setSingleLine(true);
+    pin.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+    LinearLayout body=new LinearLayout(this);body.setOrientation(LinearLayout.VERTICAL);
+    body.setPadding(dp(22),dp(5),dp(22),0);
+    body.addView(pin,new LinearLayout.LayoutParams(-1,dp(60)));
+    new AlertDialog.Builder(this).setTitle("Захист налаштувань")
+      .setMessage("Введіть PIN, щоб змінити адресу сервера. Це не пароль входу в касу.")
+      .setView(body).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Продовжити",(dialog,which)->{
+        if(!"5618".equals(pin.getText().toString().trim())){
+          endpointPinFailures++;
+          if(endpointPinFailures>=5){
+            endpointPinBlockedUntil=android.os.SystemClock.elapsedRealtime()+60000;
+            endpointPinFailures=0;
+            message("Забагато спроб. Налаштування заблоковано на 1 хвилину.");
+          }else message("Неправильний PIN");
+          return;
+        }
+        endpointPinFailures=0;showEndpointEditor();
+      }).show();
+  }
+
+  private void showEndpointEditor(){
+    EditText endpoint=new EditText(this);
+    endpoint.setSingleLine(false);
+    endpoint.setText(settings.url());
+    endpoint.setHint("https://script.google.com/macros/s/.../exec");
+    endpoint.setSelectAllOnFocus(true);
+    endpoint.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
+    LinearLayout content=new LinearLayout(this);content.setPadding(dp(18),dp(4),dp(18),dp(4));
+    content.addView(endpoint,new LinearLayout.LayoutParams(-1,-2));
+    AlertDialog dialog=new AlertDialog.Builder(this)
+      .setTitle("Адреса Google Apps Script")
+      .setMessage("Змінюйте тільки після створення нового розгортання. Стара адреса збережеться, якщо натиснути «Скасувати».")
+      .setView(content)
+      .setNegativeButton("Скасувати",null)
+      .setPositiveButton("Зберегти",null).create();
+    dialog.setOnShowListener(unused->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+      String url=endpoint.getText().toString().trim();
+      if(!url.matches("https://script\\.google\\.com/macros/s/[^/?#]+/exec")){
+        endpoint.setError("Потрібне повне посилання HTTPS з /exec");
+        return;
+      }
+      String previous=settings.url();
+      if(previous.equals(url)){dialog.dismiss();return;}
+      if(outbox.list(settings.userId(),false).size()>0 && !settings.userId().isEmpty()){
+        new AlertDialog.Builder(this)
+          .setTitle("Є записи, що не синхронізувалися")
+          .setMessage("Перш ніж змінювати сервер, синхронізуйте локальні операції й чеки. Адресу зараз не змінено.")
+          .setPositiveButton("Зрозуміло",null).show();
+        return;
+      }
+      settings.url(url);
+      if(!previous.isEmpty()){
+        secure.clear();
+        settings.clearUser();
+        state=new JSONObject();
+        page="login";
+      }
+      dialog.dismiss();draw();message("Адресу підключення збережено");
+    }));
+    dialog.show();
+  }
+
   private void registerDeviceKey(){
     if(!isCashier()||secure.token().isEmpty())return;
     JSONObject d=new JSONObject();try{d.put("deviceId",settings.deviceId());}catch(Exception ignored){}
@@ -522,6 +610,15 @@ public class MainActivity extends ComponentActivity {
       JSONObject c=comments.optJSONObject(i);if(c!=null&&c.optString("ledger_id").equals(item.optString("id")))textInto(layout,"💬 "+nameOf(c.optString("author_id"))+": "+c.optString("message"),13,NAVY,false);
     }
     EditText comment=input(layout,"Запитання або відповідь (видно всім)","",false);
+    comment.setHint("✎ Натисніть тут і напишіть запитання або відповідь…");
+    comment.setMinHeight(dp(95));
+    comment.setGravity(Gravity.TOP|Gravity.START);
+    comment.setSingleLine(false);
+    comment.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+    comment.setPadding(dp(14),dp(13),dp(14),dp(13));
+    GradientDrawable commentBg=background(0xfff6fbfd,12);
+    commentBg.setStroke(dp(2),TEAL);
+    comment.setBackground(commentBg);
     button(layout,"Надіслати коментар",()->{if(comment.getText().toString().trim().isEmpty())return;
       JSONObject d=new JSONObject();try{d.put("ledgerId",item.optString("id"));d.put("message",comment.getText().toString());}catch(Exception ignored){}
       remote("comment",d,secure.token(),r->{message("Коментар опубліковано");refresh();});
@@ -670,10 +767,13 @@ public class MainActivity extends ComponentActivity {
       JSONArray oldEvents=state.optJSONArray("events"),newEvents=r.optJSONArray("events");
       String before=oldEvents!=null&&oldEvents.length()>0?oldEvents.optJSONObject(0).optString("id"):"";
       String after=newEvents!=null&&newEvents.length()>0?newEvents.optJSONObject(0).optString("id"):"";
-      state=r;getPreferences(MODE_PRIVATE).edit().putString("last_state",state.toString()).apply();
+      String nextState=r.toString();
+      boolean changed=!nextState.equals(state.toString());
+      state=r;lastSuccessfulRefresh=android.os.SystemClock.elapsedRealtime();
+      if(changed)getPreferences(MODE_PRIVATE).edit().putString("last_state",nextState).apply();
       if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
       JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
-      if(page.equals("home")||page.equals("history")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity"))draw();
+      if(changed&&(page.equals("home")||page.equals("history")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity")))draw();
       if(isCashier()&&secure.deviceToken().isEmpty())registerDeviceKey();
     });
   }
