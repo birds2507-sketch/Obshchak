@@ -234,6 +234,14 @@ function event_(type,summary,by,ref){append_('Events',[Utilities.getUuid(),type,
 function state_(user) {
   var ledger=all_('Ledger'), receipts=all_('Receipts'), elections=all_('Elections'), ballots=all_('Ballots');
   var report=calc_(ledger);
+  // Ledger sheet rows are append-only, so this order is the authoritative posting order,
+  // including corrections and transactions with backdated business dates.
+  var runningBalance=0;
+  ledger.forEach(function(entry,index){
+    runningBalance+=Number(entry.amount)||0;
+    entry.balance_after=runningBalance;
+    entry.posting_order=index;
+  });
   return {
     me:publicUser_(user),today:today_(),
     users:all_('Users').map(publicUser_),
