@@ -91,34 +91,106 @@ public class MainActivity extends ComponentActivity {
   @Override protected void onDestroy(){pool.shutdown();super.onDestroy();}
 
   private void draw(){
-    ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setBackgroundColor(BG);
-    screen=new LinearLayout(this);screen.setOrientation(LinearLayout.VERTICAL);screen.setPadding(dp(16),dp(18),dp(16),dp(28));
-    scroll.addView(screen);setContentView(scroll);
-    TextView logo=text("₴  ОБЩАК",26,TEAL,true);screen.addView(logo);
-    textInto(screen,"Спільна каса · Android",13,MUTED,false);
-    spacer(screen,14);
-    if(page.equals("login")){drawLogin();return;}
-    if(page.equals("password")){drawChangePassword();return;}
-    headerActions();
+    LinearLayout root=new LinearLayout(this);
+    root.setOrientation(LinearLayout.VERTICAL);
+    root.setBackgroundColor(BG);
+    setContentView(root);
+
+    if(!page.equals("login")&&!page.equals("password"))topBar(root);
+    ScrollView scroll=new ScrollView(this);
+    scroll.setFillViewport(true);
+    root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1f));
+    screen=new LinearLayout(this);
+    screen.setOrientation(LinearLayout.VERTICAL);
+    screen.setPadding(dp(16),dp(15),dp(16),dp(24));
+    scroll.addView(screen);
+
+    if(page.equals("login")||page.equals("password")){
+      textInto(screen,"₴  ОБЩАК",26,TEAL,true);
+      textInto(screen,"Спільна каса · Android",13,MUTED,false);
+      spacer(screen,18);
+      if(page.equals("login"))drawLogin();else drawChangePassword();
+      return;
+    }
+
     if(page.equals("home"))drawHome();
     else if(page.equals("form"))drawForm();
     else if(page.equals("queue"))drawQueue();
     else if(page.equals("history"))drawHistory();
+    else if(page.equals("receipts"))drawReceipts();
+    else if(page.equals("questions"))drawQuestions();
     else if(page.equals("users"))drawUsers();
     else if(page.equals("votes"))drawVotes();
     else if(page.equals("reports"))drawReports();
     else if(page.equals("activity"))drawActivity();
+    else if(page.equals("settings"))drawSettings();
+    bottomBar(root);
   }
-  private void headerActions(){
-    LinearLayout row=row();screen.addView(row);
-    button(row,"⌂ Головна",()->go("home"),true);
-    button(row,"⟳ Оновити",this::refresh,false);
-    button(row,"⇥ Вихід",this::logout,false);
-    spacer(screen,12);
-    textInto(screen,settings.username()+" · "+roleName(settings.role()),13,MUTED,false);
-    if(outbox.list(settings.userId(),false).size()>0)textInto(screen,"Локальних записів у черзі: "+outbox.list(settings.userId(),false).size(),13,TEAL,true);
-    spacer(screen,10);
+
+  private void topBar(LinearLayout root){
+    LinearLayout bar=row();bar.setPadding(dp(12),dp(7),dp(12),dp(9));
+    bar.setBackgroundColor(Color.WHITE);root.addView(bar,new LinearLayout.LayoutParams(-1,dp(66)));
+    TextView menu=text("☰",26,NAVY,true);
+    menu.setGravity(Gravity.CENTER);bar.addView(menu,new LinearLayout.LayoutParams(dp(45),-1));
+    menu.setOnClickListener(v->showMenu());
+    LinearLayout title=new LinearLayout(this);title.setOrientation(LinearLayout.VERTICAL);
+    bar.addView(title,new LinearLayout.LayoutParams(0,-2,1f));
+    textInto(title,"ОБЩАК",21,NAVY,true);
+    textInto(title,"Спільна каса",11,MUTED,false);
+    TextView bell=text("♧",24,TEAL,true);bell.setGravity(Gravity.CENTER);
+    bar.addView(bell,new LinearLayout.LayoutParams(dp(43),-1));
+    bell.setText("♧");bell.setContentDescription("Події та сповіщення");
+    bell.setOnClickListener(v->go("activity"));
   }
+
+  private void bottomBar(LinearLayout root){
+    LinearLayout nav=row();nav.setBackgroundColor(Color.WHITE);
+    nav.setPadding(dp(5),dp(5),dp(5),dp(5));root.addView(nav,new LinearLayout.LayoutParams(-1,dp(69)));
+    tab(nav,"⌂","Головна","home");
+    tab(nav,"⇄","Операції","history");
+    tab(nav,"♙","Учасники","users");
+    tab(nav,"▥","Звіти","reports");
+  }
+
+  private void tab(LinearLayout nav,String symbol,String label,String target){
+    boolean selected=page.equals(target);
+    LinearLayout tile=new LinearLayout(this);tile.setOrientation(LinearLayout.VERTICAL);
+    tile.setGravity(Gravity.CENTER);
+    if(selected)tile.setBackground(background(0xffe8f4f2,12));
+    nav.addView(tile,new LinearLayout.LayoutParams(0,-1,1f));
+    TextView ic=text(symbol,21,selected?TEAL:MUTED,true);ic.setGravity(Gravity.CENTER);tile.addView(ic);
+    TextView caption=text(label,11,selected?TEAL:MUTED,selected);caption.setGravity(Gravity.CENTER);tile.addView(caption);
+    tile.setOnClickListener(v->{if(!page.equals(target))go(target);});
+  }
+
+  private void showMenu(){
+    final String[] labels={"Головна","Операції","Учасники","Звіти","Чеки витрат","Запитання","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
+    final String[] targets={"home","history","users","reports","receipts","questions","queue","votes","activity","refresh","settings","web","logout"};
+    new AlertDialog.Builder(this).setTitle("ОБЩАК · Меню")
+      .setItems(labels,(dialog,which)->{
+        String target=targets[which];
+        if(target.equals("logout")){logout();return;}
+        if(target.equals("refresh")){refresh();return;}
+        if(target.equals("web")){
+          try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(settings.url())));}
+          catch(Exception ex){message(ex.getMessage());}
+          return;
+        }
+        go(target);
+      }).show();
+  }
+
+  private void drawSettings(){
+    textInto(screen,"Налаштування",23,NAVY,true);
+    LinearLayout c=card(screen);
+    textInto(c,"Обліковий запис",15,NAVY,true);
+    textInto(c,settings.username()+" · "+roleName(settings.role()),13,MUTED,false);
+    textInto(c,"Google Apps Script: "+settings.url(),12,MUTED,false);
+    button(screen,"⟳ Оновити дані",this::refresh,false);
+    button(screen,"☁ Черга синхронізації",()->go("queue"),false);
+    button(screen,"⇥ Вийти з облікового запису",this::logout,false);
+  }
+
   private void drawLogin(){
     textInto(screen,"Вхід у закриту касу",23,NAVY,true);spacer(screen,12);
     EditText endpoint=input(screen,"Посилання Google Apps Script (/exec)",settings.url(),false);endpoint.setSingleLine(true);
@@ -162,28 +234,135 @@ public class MainActivity extends ComponentActivity {
     },true);
   }
   private void drawHome(){
-    JSONObject t=state.optJSONObject("totals");if(t==null)t=new JSONObject();
-    LinearLayout card=card(screen);textInto(card,"ЗАГАЛЬНИЙ ЗАЛИШОК",12,MUTED,true);
-    textInto(card,money(t.optLong("balance"))+" ₴",32,TEAL,true);spacer(card,6);
-    textInto(card,"Прихід: +"+money(t.optLong("income"))+" ₴",16,0xff0a8c63,true);
-    textInto(card,"Розхід: −"+money(t.optLong("expense"))+" ₴",16,0xffbf4646,true);
-    textInto(card,"Обліковий баланс. Локальні записи до синхронізації не враховані.",12,MUTED,false);
-    spacer(screen,10);
+    JSONObject totals=state.optJSONObject("totals");
+    if(totals==null)totals=new JSONObject();
+
+    LinearLayout balance=card(screen);
+    balance.setBackground(background(0xff2165c6,20));
+    balance.setPadding(dp(20),dp(18),dp(18),dp(18));
+    textInto(balance,"Загальний залишок",15,0xffdce9ff,true);
+    textInto(balance,money(totals.optLong("balance"))+" ₴",33,Color.WHITE,true);
+    textInto(balance,"Готівка + картка · обліковий баланс",12,0xffe7f1ff,false);
+
+    LinearLayout split=row();
+    screen.addView(split,new LinearLayout.LayoutParams(-1,-2));
+    summary(split,"↓  Прихід","+"+money(totals.optLong("income"))+" ₴",0xffe7f6ef,0xff168255);
+    summary(split,"↑  Розхід","−"+money(totals.optLong("expense"))+" ₴",0xffffecee,0xffb63f4c);
+    spacer(screen,8);
+
     if(isCashier()){
-      LinearLayout row=row();screen.addView(row);
-      button(row,"＋ Прихід",()->{formKind="IN";go("form");},true);
-      button(row,"− Витрата",()->{formKind="OUT";go("form");},true);
+      LinearLayout actions=row();
+      screen.addView(actions,new LinearLayout.LayoutParams(-1,-2));
+      button(actions,"＋ Прихід",()->{formKind="IN";go("form");},true);
+      button(actions,"− Витрата",()->{formKind="OUT";go("form");},true);
     }
-    button(screen,"☁ Черга синхронізації та фото",()->go("queue"),false);
-    button(screen,"≡ Усі операції та чеки",()->go("history"),false);
-    button(screen,"♙ Учасники",()->go("users"),false);
-    button(screen,"☑ Вибори касира",()->go("votes"),false);
-    button(screen,"▤ Звіти PDF",()->go("reports"),false);
-    button(screen,"◷ Події та сповіщення",()->go("activity"),false);
-    button(screen,"↗ Відкрити повну вебверсію",()->{
-      try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(settings.url())));}catch(Exception e){message(e.getMessage());}
-    },false);
-    textInto(screen,"Чернетки витрат і фото зберігаються навіть після закриття застосунку. Інтернет потрібен лише для передачі на Google Drive та перегляду нових операцій.",13,MUTED,false);
+
+    LinearLayout title=row();screen.addView(title);
+    TextView heading=text("Останні операції",19,NAVY,true);
+    title.addView(heading,new LinearLayout.LayoutParams(0,-2,1f));
+    TextView all=text("Усі  ›",13,TEAL,true);title.addView(all);
+    all.setOnClickListener(v->go("history"));
+    spacer(screen,7);
+
+    JSONArray ledger=state.optJSONArray("ledger");
+    LinearLayout recent=card(screen);
+    if(ledger==null||ledger.length()==0){
+      textInto(recent,"Операцій поки немає",14,MUTED,false);
+    }else{
+      int n=0;
+      for(int i=0;i<ledger.length()&&n<5;i++){
+        JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
+        String kind=x.optString("kind");
+        if(!kind.equals("IN")&&!kind.equals("OUT")&&!kind.equals("REVERSAL"))continue;
+        if(n++>0)separator(recent);
+        LinearLayout item=row();item.setPadding(dp(2),dp(8),dp(2),dp(8));recent.addView(item);
+        TextView symbol=text(kind.equals("IN")?"+":kind.equals("OUT")?"−":"↶",22,kind.equals("IN")?0xff168255:0xffb63f4c,true);
+        symbol.setGravity(Gravity.CENTER);
+        symbol.setBackground(background(kind.equals("IN")?0xffe5f5ec:0xffffeded,22));
+        item.addView(symbol,new LinearLayout.LayoutParams(dp(37),dp(37)));
+        LinearLayout detail=new LinearLayout(this);detail.setPadding(dp(10),0,0,0);detail.setOrientation(LinearLayout.VERTICAL);
+        item.addView(detail,new LinearLayout.LayoutParams(0,-2,1f));
+        textInto(detail,x.optString("purpose").isEmpty()?(kind.equals("IN")?"Внесок":"Витрата"):x.optString("purpose"),14,NAVY,true);
+        String extra=x.optString("person_name");
+        if(extra.isEmpty())extra=x.optString("category");
+        textInto(detail,x.optString("date")+(extra.isEmpty()?"":" · "+extra),11,MUTED,false);
+        TextView amount=text((x.optLong("amount")>=0?"+":"−")+money(Math.abs(x.optLong("amount")))+" ₴",15,x.optLong("amount")>=0?0xff168255:0xffb63f4c,true);
+        amount.setGravity(Gravity.RIGHT);item.addView(amount);
+        item.setOnClickListener(v->showDetail(x));
+      }
+    }
+
+    LinearLayout shortcuts=row();screen.addView(shortcuts);
+    quickTile(shortcuts,"▤","Чеки витрат",countReceipts()+" файлів",()->go("receipts"));
+    quickTile(shortcuts,"☏","Запитання",countComments()+" коментарів",()->go("questions"));
+    quickTile(shortcuts,"☁","Синхронізація",outbox.list(settings.userId(),false).size()+" у черзі",()->go("queue"));
+    spacer(screen,6);
+    textInto(screen,"Записи, не передані в Google, поки не входять до загального залишку.",12,MUTED,false);
+  }
+
+  private void summary(LinearLayout row,String label,String amount,int bg,int ink){
+    LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+    box.setPadding(dp(12),dp(11),dp(8),dp(11));box.setBackground(background(bg,16));
+    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1f);
+    lp.setMargins(dp(2),0,dp(2),dp(4));row.addView(box,lp);
+    textInto(box,label,13,NAVY,true);textInto(box,amount,19,ink,true);
+    textInto(box,"За весь час",11,MUTED,false);
+  }
+
+  private void quickTile(LinearLayout row,String symbol,String label,String note,Runnable action){
+    LinearLayout tile=new LinearLayout(this);tile.setOrientation(LinearLayout.VERTICAL);
+    tile.setPadding(dp(8),dp(12),dp(5),dp(11));
+    tile.setBackground(background(Color.WHITE,14));
+    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(112),1f);
+    lp.setMargins(dp(2),dp(3),dp(2),dp(3));row.addView(tile,lp);
+    textInto(tile,symbol,22,TEAL,true);
+    textInto(tile,label,12,NAVY,true);
+    textInto(tile,note,10,MUTED,false);
+    tile.setOnClickListener(v->action.run());
+  }
+
+  private void separator(LinearLayout parent){
+    View line=new View(this);line.setBackgroundColor(0xffedf0f2);
+    parent.addView(line,new LinearLayout.LayoutParams(-1,dp(1)));
+  }
+  private int countReceipts(){JSONArray a=state.optJSONArray("receipts");return a==null?0:a.length();}
+  private int countComments(){JSONArray a=state.optJSONArray("comments");return a==null?0:a.length();}
+
+  private void drawReceipts(){
+    textInto(screen,"Чеки витрат",23,NAVY,true);
+    JSONArray ledger=state.optJSONArray("ledger"),receipts=state.optJSONArray("receipts");
+    if(ledger==null||ledger.length()==0){textInto(screen,"Витрат поки немає",14,MUTED,false);return;}
+    for(int i=0;i<ledger.length();i++){
+      JSONObject tx=ledger.optJSONObject(i);if(tx==null||!tx.optString("kind").equals("OUT"))continue;
+      int count=0;
+      if(receipts!=null)for(int j=0;j<receipts.length();j++){
+        JSONObject r=receipts.optJSONObject(j);if(r!=null&&r.optString("ledger_id").equals(tx.optString("id")))count++;
+      }
+      LinearLayout c=card(screen);
+      textInto(c,tx.optString("purpose")+" · "+money(Math.abs(tx.optLong("amount")))+" ₴",15,NAVY,true);
+      textInto(c,tx.optString("date")+" · "+(count>0?"Є чеків: "+count:"Без чека: "+tx.optString("no_receipt_reason")),12,count>0?0xff168255:MUTED,false);
+      button(c,"Відкрити витрату й чеки",()->showDetail(tx),false);
+    }
+  }
+
+  private void drawQuestions(){
+    textInto(screen,"Запитання до витрат",23,NAVY,true);
+    JSONArray comments=state.optJSONArray("comments"),ledger=state.optJSONArray("ledger");
+    if(comments==null||comments.length()==0){textInto(screen,"Запитань і відповідей поки немає",14,MUTED,false);return;}
+    for(int i=0;i<comments.length();i++){
+      JSONObject c=comments.optJSONObject(i);if(c==null)continue;
+      JSONObject tx=null;
+      if(ledger!=null)for(int j=0;j<ledger.length();j++){
+        JSONObject e=ledger.optJSONObject(j);if(e!=null&&e.optString("id").equals(c.optString("ledger_id"))){tx=e;break;}
+      }
+      if(tx==null)continue;
+      final JSONObject target=tx;
+      LinearLayout box=card(screen);
+      textInto(box,tx.optString("purpose")+" · "+money(Math.abs(tx.optLong("amount")))+" ₴",15,NAVY,true);
+      textInto(box,nameOf(c.optString("author_id"))+": "+c.optString("message"),13,MUTED,false);
+      textInto(box,c.optString("created_at"),11,MUTED,false);
+      button(box,"Відкрити обговорення",()->showDetail(target),false);
+    }
   }
 
   private boolean isCashier(){return settings.role().equals("CASHIER");}
@@ -494,7 +673,7 @@ public class MainActivity extends ComponentActivity {
       state=r;getPreferences(MODE_PRIVATE).edit().putString("last_state",state.toString()).apply();
       if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
       JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
-      if(page.equals("home")||page.equals("history")||page.equals("users")||page.equals("votes")||page.equals("activity"))draw();
+      if(page.equals("home")||page.equals("history")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity"))draw();
       if(isCashier()&&secure.deviceToken().isEmpty())registerDeviceKey();
     });
   }
