@@ -25,7 +25,7 @@ public class QueueSyncWorker extends Worker {
     Constraints constraints=new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
     OneTimeWorkRequest request=new OneTimeWorkRequest.Builder(QueueSyncWorker.class)
         .setConstraints(constraints).setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();
-    WorkManager.getInstance(c).enqueueUniqueWork("obshchak_sync",ExistingWorkPolicy.KEEP,request);
+    WorkManager.getInstance(c).enqueueUniqueWork("obshchak_sync",ExistingWorkPolicy.APPEND_OR_REPLACE,request);
   }
   @NonNull @Override public Result doWork(){
     Context c=getApplicationContext();Settings s=new Settings(c);String token=new SecurePrefs(c).deviceToken();
