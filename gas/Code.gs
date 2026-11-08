@@ -862,6 +862,17 @@ function payReimbursement_(user,data){
       'Чек у заявці '+r.id,'',user.id,r.expense_target,r.id]);
     found={id:ledgerId};
   }
+  // Reuse the original Drive file in the public expense register. Never copy
+  // or charge for the receipt twice, including after a network retry.
+  var proof=all_('Receipts').filter(function(x){
+    return x.id===r.receipt_id&&x.ledger_id==='CLAIM:'+r.id;
+  })[0];
+  if(proof&&!all_('Receipts').some(function(x){
+    return x.ledger_id===found.id&&x.file_id===proof.file_id;
+  })){
+    append_('Receipts',[Utilities.getUuid(),found.id,proof.file_id,proof.filename,
+      proof.mime,proof.size,now_(),r.requester_id]);
+  }
   if(r.status==='APPROVED'){
     updateReimbursement_(r.id,{status:'PAID_PENDING_CONFIRMATION',
       paid_by:user.id,paid_at:now_(),ledger_id:found.id});
