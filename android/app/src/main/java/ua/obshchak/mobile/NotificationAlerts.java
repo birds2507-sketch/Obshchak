@@ -107,7 +107,7 @@ final class NotificationAlerts {
   private static boolean isRelevant(String type){
     return "TRANSACTION".equals(type)||"CORRECTION".equals(type)||
       "RECEIPT".equals(type)||"COMMENT".equals(type)||
-      "ELECTION".equals(type)||"HANDOVER".equals(type);
+      "ELECTION".equals(type)||"HANDOVER".equals(type)||"REIMBURSEMENT".equals(type);
   }
   private static void post(Context context,JSONObject e){
     String type=e.optString("type");
@@ -119,6 +119,7 @@ final class NotificationAlerts {
     else if("RECEIPT".equals(type)){title="До витрати додано чек";page="history";}
     else if("ELECTION".equals(type)){title="Новина про вибори касира";page="votes";}
     else if("HANDOVER".equals(type)){title="Передача каси";page="activity";}
+    else if("REIMBURSEMENT".equals(type)){title="Борги / Відшкодування";page="debts";}
 
     Intent intent=new Intent(context,MainActivity.class);
     intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);
