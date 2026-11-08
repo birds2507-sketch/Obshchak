@@ -928,7 +928,14 @@ function confirmReimbursement_(user,data){
     return {ok:true,status:'PAYMENT_DISPUTED'};
   }
   if(String(data.received||'')!=='YES')throw new Error('Підтвердіть або заперечте отримання');
-  updateReimbursement_(r.id,{status:'CONFIRMED',confirmed_by:user.id,confirmed_at:now_()});
+  var fields={status:'CONFIRMED',confirmed_by:user.id,confirmed_at:now_()};
+  if(r.status==='APPEALED'){
+    fields.appeal_decision='RECIPIENT_CONFIRMED';
+    fields.appeal_decided_by=user.id;
+    fields.appeal_decided_at=now_();
+    fields.appeal_decision_reason='Отримувач сам підтвердив отримання після апеляції касира';
+  }
+  updateReimbursement_(r.id,fields);
   logAudit_(user.id,'REIMBURSEMENT_CONFIRMED','Отримувач підтвердив виплату '+r.id);
   event_('REIMBURSEMENT','Отримувач підтвердив отримання грошей: '+r.purpose,user.id,r.id);
   return {ok:true,status:'CONFIRMED'};
