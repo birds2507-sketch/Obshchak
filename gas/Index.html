@@ -36,10 +36,10 @@ function formatDate(s){if(!s)return'';let v=String(s).slice(0,10).split('-');ret
 function navBtn(id,label,icon){return `<button type="button" class="navbtn ${A.page===id?'active':''}" data-act="page" data-page="${id}">${icon} ${label}</button>`;}
 function mobileBtn(id,label,icon){return `<button type="button" class="${A.page===id?'active':''}" data-act="page" data-page="${id}"><b>${icon}</b>${label}</button>`;}
 function render(){if(!A.state){renderLogin();return;}
-let me=A.state.me, items=[['home','Головна','⌂'],['ledger','Операції','⇄'],['reports','Звіти','▤'],['people','Люди','♟'],['votes','Вибори','✓']];
+let me=A.state.me, items=[['home','Головна','⌂'],['ledger','Операції','⇄'],['reports','Звіти','▤'],['debts','Борги','₴'],['people','Люди','♟'],['votes','Вибори','✓']];
 $('#root').innerHTML=`<div class="layout"><header class="top"><div class="logo"><span class="logo-icon">₴</span>ОБЩАК</div><div class="userchip"><span class="badge-dot"></span><span>${esc(me.name)} <span class="tiny">${esc(me.role==='CASHIER'?'касир':['ADMIN','RESERVE'].includes(me.role)?'адміністратор':'учасник')}</span></span><button class="btn sm outline" data-act="logout">Вийти</button></div></header>
-<nav class="nav">${items.map(x=>navBtn(...x)).join('')}${navBtn('reversals','Сторнування','↶')}${navBtn('activity','Активність','◷')}</nav>
-<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='votes'?votesPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
+<nav class="nav">${items.map(x=>navBtn(...x)).join('')}${navBtn('debts','Борги','₴')}${navBtn('reversals','Сторнування','↶')}${navBtn('activity','Активність','◷')}</nav>
+<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='votes'?votesPage():A.page==='debts'?debtsPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
 <div class="tiny" style="text-align:center;margin-top:24px">Дані Google Таблиці · Онлайн-облік, не банківський баланс · <button class="btn sm" data-act="refresh">Оновити</button> <button class="btn sm" data-act="password">Змінити пароль</button></div></div>
 <nav class="bottom-nav">${items.map(x=>mobileBtn(...x)).join('')}</nav>
 ${A.selected?detailModal():''}${A.preview?previewModal():''}${A.secret?secretModal():''}`;
