@@ -853,6 +853,7 @@ function payReimbursement_(user,data){
     throw new Error('Спочатку погодьте заявку');
   if(r.requester_id===user.id)throw new Error('Касир не може сам собі виплатити відшкодування');
   var found=all_('Ledger').filter(function(x){return x.reimbursement_id===r.id;})[0];
+  var hadLedger=!!found;
   if(!found){
     if(r.status!=='APPROVED')throw new Error('Немає фінансового запису відшкодування: потрібна перевірка');
     var ledgerId=Utilities.getUuid();
@@ -881,7 +882,7 @@ function payReimbursement_(user,data){
       '. Очікується підтвердження отримувача',user.id,r.id);
   }
   return {ok:true,status:r.status==='APPROVED'?'PAID_PENDING_CONFIRMATION':r.status,
-    ledgerId:found.id,alreadyExists:r.status!=='APPROVED'};
+    ledgerId:found.id,alreadyExists:hadLedger};
 }
 function nameForUser_(id){
   var person=findUser_(id);
