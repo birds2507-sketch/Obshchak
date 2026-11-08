@@ -578,6 +578,40 @@ function event_(type,summary,by,ref){
 }
 
 
+/** Account contributions are linked ONLY by immutable user ID, never by a similar name.
+ * Reversal requests are distinct from posted reversals.
+ */
+function contributionsFor_(user,ledger,requests){
+  var reversals={};
+  ledger.forEach(function(tx){
+    if(tx.kind==='REVERSAL'&&tx.correction_of)
+      reversals[tx.correction_of]=tx;
+  });
+  var byOriginal={};
+  requests.forEach(function(r){
+    if(r.original_id)byOriginal[r.original_id]=r;
+  });
+  return ledger.filter(function(tx){
+    return tx.kind==='IN'&&tx.person_id===user.id;
+  }).map(function(tx){
+    var rev=reversals[tx.id],request=byOriginal[tx.id];
+    var status=rev?'REVERSED':request&&(
+      request.status==='PENDING'||request.status==='DISPUTED')?
+      request.status:'ACTIVE';
+    return {
+      id:tx.id,date:tx.date,created_at:tx.created_at,
+      amount:Number(tx.amount)||0,purpose:tx.purpose,
+      person_name:tx.person_name,status:status,
+      reversal_id:rev?rev.id:'',
+      reversal_request_id:request?request.id:'',
+      reversal_reason:request?request.reason:'',
+      reversal_requested_by:request?request.requested_by:'',
+      reversal_status:request?request.status:'',
+      reversal_decided_by:request?request.decided_by:'',
+      reversal_decided_at:request?request.decided_at:''
+    };
+  }).reverse();
+}
 function state_(user) {
   var ledger=all_('Ledger'), receipts=all_('Receipts'), elections=all_('Elections'), ballots=all_('Ballots');
   var report=calc_(ledger);
@@ -590,11 +624,14 @@ function state_(user) {
     entry.posting_order=index;
   });
   ensureReversalRequests_();
+  var reversalRequests=all_('ReversalRequests');
+  var mine=contributionsFor_(user,ledger,reversalRequests);
   return {
     me:publicUser_(user),today:today_(),
     electionsEnabled:electionsEnabled_(),
     users:all_('Users').map(publicUser_),
-    reversalRequests:all_('ReversalRequests').reverse(),
+    reversalRequests:reversalRequests.reverse(),
+    myContributions:mine,
     reimbursements:reimbursements_().reverse(),
     reimbursementComments:all_('ReimbursementComments').reverse(),
     // Stable authoritative insertion order; multiple entries in one second stay ordered.
@@ -686,7 +723,10 @@ function addTransaction_(user,data){
     // A single common balance: physical storage is the cashier's responsibility.
     method='';
     personId=String(data.personId||'');
-    if(personId){var person=findUser_(personId);if(!person)throw new Error('Учасника не знайдено');personName=person.name;}
+    if(personId){var person=findUser_(personId);
+      if(!person||person.active!=='1'||person.deleted_at)
+        throw new Error('Учасника не знайдено серед активних');
+      personName=person.name;}
     else personName=needed_(data.personName,'Хто вніс гроші',100);
   } else if(kind==='OUT'){
     category=needed_(data.category,'Категорія витрати',80);
