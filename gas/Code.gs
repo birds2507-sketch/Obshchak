@@ -19,6 +19,7 @@ var CFG_ = {
     Ballots: ['id','election_id','voter_id','vote','created_at'],
     Events: ['id','type','summary','created_at','actor_id','ref_id'],
     Audit: ['id','created_at','actor_id','action','details'],
+    ReversalRequests: ['id','original_id','requested_by','reason','status','created_at','decided_at','decided_by','reversal_id','objected_by','objection','objected_at','acknowledged_by','acknowledged_at'],
     Handovers: ['id','election_id','ledger_balance','actual_balance','difference','explanation','created_at','created_by'],
     DeviceTokens: ['id','user_id','device_id','token_hash','version','expires_ms','revoked','created_at']
   }
@@ -114,7 +115,11 @@ function api(action, data, token) {
     case 'registerDevice': return withLock_(function(){return registerDevice_(user,data);});
     case 'addTransaction': return withLock_(function(){return addTransaction_(user,data);});
     case 'openingBalance': return withLock_(function(){return openingBalance_(user,data);});
+    // Backward-compatible action: now creates an approval request, never money movement.
     case 'reverseTransaction': return withLock_(function(){return reverseTransaction_(user,data);});
+    case 'decideReversal': return withLock_(function(){return decideReversal_(user,data);});
+    case 'disputeReversal': return withLock_(function(){return disputeReversal_(user,data);});
+    case 'ackReversal': return withLock_(function(){return acknowledgeReversal_(user,data);});
     case 'addReceipt': return withLock_(function(){return addReceipt_(user,data);});
     case 'getReceipt': return getReceipt_(user,data);
     case 'comment': return withLock_(function(){return comment_(user,data);});
@@ -461,10 +466,13 @@ function state_(user) {
     entry.balance_after=runningBalance;
     entry.posting_order=index;
   });
+  ensureReversalRequests_();
   return {
     me:publicUser_(user),today:today_(),
     users:all_('Users').map(publicUser_),
-    ledger:ledger.sort(function(a,b){return b.created_at.localeCompare(a.created_at);}),
+    reversalRequests:all_('ReversalRequests').reverse(),
+    // Stable authoritative insertion order; multiple entries in one second stay ordered.
+    ledger:ledger.sort(function(a,b){return Number(b.posting_order)-Number(a.posting_order);}),
     receipts:receipts,
     comments:all_('Comments').sort(function(a,b){return a.created_at.localeCompare(b.created_at);}),
     elections:elections.sort(function(a,b){return b.created_at.localeCompare(a.created_at);}),
@@ -581,19 +589,135 @@ function addTransaction_(user,data){
   logAudit_(user.id,kind,'Операція '+id+' на '+cents+' коп.');
   return {ok:true,id:id};
 }
+function ensureReversalRequests_(){
+  var db=db_(),sh=db.getSheetByName('ReversalRequests');
+  if(!sh){
+    sh=db.insertSheet('ReversalRequests');
+    sh.appendRow(CFG_.HEADERS.ReversalRequests);
+    sh.setFrozenRows(1);
+    sh.getRange(1,1,1,CFG_.HEADERS.ReversalRequests.length)
+      .setFontWeight('bold').setBackground('#e2e8f0');
+    sh.getRange(2,1,Math.max(1,sh.getMaxRows()-1),CFG_.HEADERS.ReversalRequests.length)
+      .setNumberFormat('@');
+  }
+  return sh;
+}
+function reversalRequests_(){ensureReversalRequests_();return all_('ReversalRequests');}
+function reversalOriginal_(id){
+  var original=all_('Ledger').filter(function(x){return x.id===id;})[0];
+  if(!original||['IN','OUT'].indexOf(original.kind)<0)
+    throw new Error('Сторнувати можна тільки первинний прихід або витрату');
+  return original;
+}
+function isReversed_(id,ledger){
+  return (ledger||all_('Ledger')).some(function(x){
+    return x.kind==='REVERSAL'&&x.correction_of===id;
+  });
+}
+function reversalRequest_(id){
+  var found=reversalRequests_().filter(function(r){return r.id===id;})[0];
+  if(!found)throw new Error('Заявку на сторнування не знайдено');
+  return found;
+}
+function updateReversal_(id,fields){
+  var sh=ensureReversalRequests_(),rows=sh.getDataRange().getDisplayValues();
+  var index=rows.findIndex(function(row,i){return i>0&&row[0]===id;});
+  if(index<0)throw new Error('Заявку не знайдено для оновлення');
+  Object.keys(fields).forEach(function(key){
+    var column=CFG_.HEADERS.ReversalRequests.indexOf(key);
+    if(column<0)throw new Error('Невідоме поле заявки');
+    sh.getRange(index+1,column+1).setValue(String(fields[key]));
+  });
+}
 function reverseTransaction_(user,data){
   requireRole_(user,['CASHIER']);
-  var id=String(data.id||''), reason=needed_(data.reason,'Причина коригування',500);
-  if(reason.length<5)throw new Error('Поясніть причину коригування (не менше 5 символів)');
-  var ledger=all_('Ledger'), orig=ledger.filter(function(r){return r.id===id;})[0];
-  if(!orig || ['IN','OUT'].indexOf(orig.kind)<0)throw new Error('Можна скасувати тільки первинну операцію');
-  if(ledger.some(function(r){return r.kind==='REVERSAL'&&r.correction_of===id;}))throw new Error('Ця операція вже скасована');
-  var revId=Utilities.getUuid();
-  append_('Ledger',[revId,today_(),now_(),'REVERSAL',String(-Number(orig.amount)),orig.person_id,orig.person_name,orig.method,orig.category,'Сторно: '+reason,'',id,user.id,orig.expense_target||'']);
-  event_('CORRECTION','Коригування операції: '+orig.purpose,user.id,id);
-  logAudit_(user.id,'REVERSE','Сторновано '+id+' через '+revId+': '+reason);
-  return {ok:true,id:revId};
+  var id=String(data.id||'');
+  var reason=needed_(data.reason,'Причина сторнування',500);
+  if(reason.length<5)throw new Error('Причина сторнування — щонайменше 5 символів');
+  var orig=reversalOriginal_(id);
+  if(isReversed_(id))throw new Error('Ця операція вже сторнована');
+  var requests=reversalRequests_();
+  if(requests.some(function(r){return r.original_id===id &&
+      (r.status==='PENDING'||r.status==='DISPUTED'||r.status==='APPROVED');}))
+    throw new Error('Для цієї операції вже є активне або підтверджене сторнування');
+  var admins=activeAdministrators_();
+  if(!admins.length)
+    throw new Error('Перед сторнуванням створіть незалежного адміністратора в «Учасники»');
+  var reqId=Utilities.getUuid();
+  append_('ReversalRequests',[reqId,id,user.id,reason,'PENDING',now_(),'','','','','','','','']);
+  logAudit_(user.id,'REVERSE_REQUEST','Запит на сторнування '+id+': '+reason);
+  event_('CORRECTION','⚠ Запит на сторнування '+orig.kind+' '+orig.person_name+
+    ' — '+orig.purpose+' (очікує адміністратора)',user.id,reqId);
+  return {ok:true,id:reqId,status:'PENDING',balanceChanged:false};
 }
+function decideReversal_(user,data){
+  requireRole_(user,['ADMIN','RESERVE']);
+  var id=String(data.id||''),decision=String(data.decision||'');
+  if(['APPROVE','REJECT'].indexOf(decision)<0)
+    throw new Error('Оберіть підтвердити або відхилити');
+  var r=reversalRequest_(id);
+  if(r.status!=='PENDING' && r.status!=='DISPUTED')
+    throw new Error('Це сторнування вже розглянуто');
+  if(user.id===r.requested_by)
+    throw new Error('Заявник не може підтверджувати власне сторнування');
+  if(decision==='APPROVE'&&r.status==='DISPUTED')
+    throw new Error('Сторнування оскаржено учасником. Спочатку відхиліть заявку й розберіться в розбіжності.');
+  var reason=needed_(data.reason,'Коментар адміністратора',300);
+  if(decision==='REJECT'){
+    updateReversal_(id,{status:'REJECTED',decided_at:now_(),decided_by:user.id});
+    logAudit_(user.id,'REVERSE_REJECT','Відхилено сторнування '+r.original_id+': '+reason);
+    event_('CORRECTION','Сторнування відхилено адміністратором: '+reason,user.id,id);
+    return {ok:true,status:'REJECTED',balanceChanged:false};
+  }
+  var original=reversalOriginal_(r.original_id);
+  var ledger=all_('Ledger');
+  var existing=ledger.filter(function(x){
+    return x.kind==='REVERSAL'&&x.correction_of===r.original_id;
+  })[0];
+  var revId=existing?existing.id:Utilities.getUuid();
+  if(!existing){
+    // Only the approving ADMIN may execute a reversal on the ledger.
+    append_('Ledger',[revId,today_(),now_(),'REVERSAL',String(-Number(original.amount)),
+      original.person_id,original.person_name,original.method,original.category,
+      'Сторно (схвалено адміністратором): '+r.reason,'',r.original_id,user.id,
+      original.expense_target||'']);
+  }
+  updateReversal_(id,{status:'APPROVED',decided_at:now_(),
+    decided_by:user.id,reversal_id:revId});
+  logAudit_(user.id,'REVERSE_APPROVE','Погоджено '+r.original_id+
+    ' → '+revId+'; причина: '+r.reason+'; адміністратора: '+reason);
+  event_('CORRECTION','Сторнування підтверджено адміністратором: '+
+    original.purpose,user.id,r.original_id);
+  return {ok:true,status:'APPROVED',id:revId,balanceChanged:true};
+}
+function disputeReversal_(user,data){
+  var id=String(data.id||''),reason=needed_(data.reason,'Пояснення заперечення',300);
+  if(reason.length<5)throw new Error('Поясніть заперечення (мінімум 5 символів)');
+  var r=reversalRequest_(id);
+  if(r.status!=='PENDING')throw new Error('Заперечити можна лише заявку, що очікує розгляду');
+  if(user.id===r.requested_by)throw new Error('Касир не може оскаржувати власну заявку');
+  updateReversal_(id,{status:'DISPUTED',objected_by:user.id,objection:reason,
+    objected_at:now_()});
+  logAudit_(user.id,'REVERSE_DISPUTE','Заперечення сторнування '+r.original_id+': '+reason);
+  event_('CORRECTION','⚠ Учасник оскаржив сторнування. Адміністратор не може його схвалити.',
+    user.id,id);
+  return {ok:true,status:'DISPUTED'};
+}
+function acknowledgeReversal_(user,data){
+  var r=reversalRequest_(String(data.id||''));
+  if(r.status!=='PENDING')throw new Error('Заявка більше не очікує розгляду');
+  var original=reversalOriginal_(r.original_id);
+  // Only the confirmed person_id is authoritative; names are free text
+  // and must not be treated as account identity.
+  if(original.kind!=='IN'||!original.person_id||original.person_id!==user.id)
+    throw new Error('Цей внесок не прив’язаний до вашого облікового запису. Ви можете написати заперечення.');
+  updateReversal_(r.id,{acknowledged_by:user.id,acknowledged_at:now_()});
+  logAudit_(user.id,'REVERSE_ACK','Учасник підтвердив ознайомлення зі сторнуванням '+r.original_id);
+  event_('CORRECTION','Учасник підтвердив отримання запиту на сторнування',
+    user.id,r.id);
+  return {ok:true,status:'PENDING'};
+}
+
 function addReceipt_(user,data) {
   requireRole_(user,['CASHIER']);
   var clientId=String(data.receiptId||'');
