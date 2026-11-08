@@ -34,16 +34,17 @@ async function request(action,data={},refresh=true){if(A.loading)throw new Error
 function dateLocal(){const d=new Date();return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');}
 function formatDate(s){if(!s)return'';let v=String(s).slice(0,10).split('-');return v.length===3?v[2]+'.'+v[1]+'.'+v[0]:s;}
 function navBtn(id,label,icon){const active=(id==='income'&&A.page==='ledger'&&A.filter==='IN')||(id==='expenses'&&A.page==='ledger'&&A.filter==='OUT')||(id==='ledger'&&A.page==='ledger'&&A.filter==='ALL')||A.page===id;return `<button type="button" class="navbtn ${active?'active':''}" data-act="page" data-page="${id}">${icon} ${label}</button>`;}
-function mobileBtn(id,label,icon){return `<button type="button" class="${A.page===id?'active':''}" data-act="page" data-page="${id}"><b>${icon}</b>${label}</button>`;}
+function mobileBtn(id,label,icon){const active=(id==='income'&&A.page==='ledger'&&A.filter==='IN')||(id==='expenses'&&A.page==='ledger'&&A.filter==='OUT')||A.page===id;return `<button type="button" class="${active?'active':''}" data-act="page" data-page="${id}"><b>${icon}</b>${label}</button>`;}
 function render(){if(!A.state){renderLogin();return;}
 if(A.page==='votes'&&A.state.electionsEnabled===false)A.page='home';
 let me=A.state.me, items=[['home','Головна','⌂'],['income','Доходи','↓'],['expenses','Витрати','↑'],['ledger','Операції','⇄'],['mycontributions','Мій кабінет','♙'],['reports','Звіти','▤'],['debts','Борги','₴'],['people','Люди','♟']];
 if(A.state.electionsEnabled!==false)items.push(['votes','Вибори','✓']);
+const mobileItems=[['home','Головна','⌂'],['income','Доходи','↓'],['expenses','Витрати','↑'],['mycontributions','Мої внески','♙'],['more','Меню','☰']];
 $('#root').innerHTML=`<div class="layout"><header class="top"><div class="logo"><span class="logo-icon">₴</span>ОБЩАК</div><div class="userchip"><span class="badge-dot"></span><span>${esc(me.name)} <span class="tiny">${esc(me.role==='CASHIER'?'касир':['ADMIN','RESERVE'].includes(me.role)?'адміністратор':'учасник')}</span></span><button class="btn sm outline" data-act="logout">Вийти</button></div></header>
 <nav class="nav">${items.map(x=>navBtn(...x)).join('')}${navBtn('reversals','Сторнування','↶')}${navBtn('activity','Активність','◷')}</nav>
-<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='mycontributions'?myContributionsPage():A.page==='votes'?votesPage():A.page==='debts'?debtsPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
+<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='more'?morePage():A.page==='mycontributions'?myContributionsPage():A.page==='votes'?votesPage():A.page==='debts'?debtsPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
 <div class="tiny" style="text-align:center;margin-top:24px">Дані Google Таблиці · Онлайн-облік, не банківський баланс · <button class="btn sm" data-act="refresh">Оновити</button> <button class="btn sm" data-act="password">Змінити пароль</button></div></div>
-<nav class="bottom-nav">${items.map(x=>mobileBtn(...x)).join('')}</nav>
+<nav class="bottom-nav">${mobileItems.map(x=>mobileBtn(...x)).join('')}</nav>
 ${A.selected?detailModal():''}${A.preview?previewModal():''}${A.secret?secretModal():''}`;
 restoreForm();
 }
@@ -335,6 +336,18 @@ function electionRules(e){
  if(!e)return {total:live,required:Math.floor(live/2)+1,allowed:true};
  let voters=null;try{if(e.electorate)voters=JSON.parse(e.electorate);}catch(err){}
  return {total:voters?voters.length:10,required:Number(e.required_votes)||6,allowed:!voters||voters.includes(A.state.me.id)};
+}
+function morePage(){
+ const enabled=A.state.electionsEnabled!==false;
+ const entries=[['ledger','Усі операції'],['people','Учасники / керування'],
+   ['reports','Звіти'],['debts','Борги / Відшкодування'],
+   ['reversals','Сторнування'],['activity','Події та сповіщення']];
+ if(enabled)entries.push(['votes','Вибори касира']);
+ return '<div class="stack"><div class="headrow"><h1>Меню ОБЩАК</h1></div>'+
+ '<div class="card">'+entries.map(item=>
+  '<div class="rowitem" data-act="page" data-page="'+esc(item[0])+'">'+
+    '<strong>'+esc(item[1])+'</strong><div class="right">›</div></div>').join('')+
+ '</div></div>';
 }
 function myContributionsPage(){
  const rows=A.state.myContributions||[];
