@@ -13,7 +13,7 @@ var CFG_ = {
   HEADERS: {
     Users: ['id','login','name','role','salt','hash','must_change','active','created_at','version'],
     Ledger: ['id','date','created_at','kind','amount','person_id','person_name','method','category','purpose','no_receipt_reason','correction_of','created_by','expense_target','reimbursement_id'],
-    Reimbursements: ['id','created_at','requester_id','amount','purpose','category','expense_target','receipt_id','status','approved_by','approved_at','paid_by','paid_at','ledger_id','confirmed_by','confirmed_at','rejected_by','rejected_at','rejection_reason','disputed_at','dispute_reason'],
+    Reimbursements: ['id','created_at','requester_id','amount','purpose','category','expense_target','receipt_id','status','approved_by','approved_at','paid_by','paid_at','ledger_id','confirmed_by','confirmed_at','rejected_by','rejected_at','rejection_reason','disputed_at','dispute_reason','appeal_by','appeal_at','appeal_reason','appeal_decision','appeal_decided_by','appeal_decided_at','appeal_decision_reason'],
     ReimbursementComments: ['id','claim_id','author_id','message','created_at'],
     Receipts: ['id','ledger_id','file_id','filename','mime','size','created_at','created_by'],
     Comments: ['id','ledger_id','author_id','message','created_at'],
@@ -127,6 +127,8 @@ function api(action, data, token) {
     case 'decideReimbursement': return withLock_(function(){return decideReimbursement_(user,data);});
     case 'payReimbursement': return withLock_(function(){return payReimbursement_(user,data);});
     case 'confirmReimbursement': return withLock_(function(){return confirmReimbursement_(user,data);});
+    case 'appealReimbursement': return withLock_(function(){return appealReimbursement_(user,data);});
+    case 'decideReimbursementAppeal': return withLock_(function(){return decideReimbursementAppeal_(user,data);});
     case 'commentReimbursement': return withLock_(function(){return commentReimbursement_(user,data);});
     case 'addReceipt': return withLock_(function(){return addReceipt_(user,data);});
     case 'getReceipt': return getReceipt_(user,data);
@@ -766,14 +768,34 @@ function addReceipt_(user,data) {
 function ensureReimbursements_(){
   var book=db_();
   ['Reimbursements','ReimbursementComments'].forEach(function(name){
-    if(book.getSheetByName(name))return;
-    var sh=book.insertSheet(name),head=CFG_.HEADERS[name];
-    sh.appendRow(head);
-    sh.setFrozenRows(1);
-    sh.getRange(1,1,1,head.length).setFontWeight('bold').setBackground('#e2e8f0');
-    sh.getRange(2,1,Math.max(1,sh.getMaxRows()-1),head.length).setNumberFormat('@');
+    var sh=book.getSheetByName(name),head=CFG_.HEADERS[name];
+    if(!sh){
+      sh=book.insertSheet(name);
+      sh.appendRow(head);
+      sh.setFrozenRows(1);
+      sh.getRange(1,1,1,head.length).setFontWeight('bold').setBackground('#e2e8f0');
+      sh.getRange(2,1,Math.max(1,sh.getMaxRows()-1),head.length).setNumberFormat('@');
+      return;
+    }
+    if(name==='Reimbursements'){
+      // Append appeal columns without changing or deleting any prior claim or payment.
+      var priorHeader=sh.getRange(1,1,1,Math.max(21,sh.getLastColumn())).getDisplayValues()[0];
+      var base=head.slice(0,21);
+      if(base.some(function(field,i){return priorHeader[i]!==field;}))
+        throw new Error('Структура реєстру боргів відрізняється. Зупинено без зміни даних.');
+      var newFields=head.slice(21);
+      if(newFields.every(function(field,i){return priorHeader[21+i]===field;}))return;
+      if(newFields.some(function(field){return priorHeader.indexOf(field)>=0;}))
+        throw new Error('Колонки апеляцій змішані. Потрібна перевірка без втрати даних.');
+      sh.insertColumnsAfter(21,newFields.length);
+      newFields.forEach(function(field,i){
+        sh.getRange(1,22+i).setValue(field).setFontWeight('bold').setBackground('#e2e8f0');
+      });
+      sh.getRange(2,22,Math.max(1,sh.getMaxRows()-1),newFields.length).setNumberFormat('@');
+    }
   });
 }
+
 function reimbursements_(){ensureReimbursements_();return all_('Reimbursements');}
 function reimbursement_(id){
   var item=reimbursements_().filter(function(x){return x.id===String(id||'');})[0];
@@ -892,9 +914,11 @@ function confirmReimbursement_(user,data){
   var r=reimbursement_(data.id);
   if(r.requester_id!==user.id)throw new Error('Підтвердити гроші може лише отримувач');
   if(r.status==='CONFIRMED')return {ok:true,status:'CONFIRMED',alreadyExists:true};
-  if(r.status!=='PAID_PENDING_CONFIRMATION'&&r.status!=='PAYMENT_DISPUTED')
+  if(r.status!=='PAID_PENDING_CONFIRMATION'&&r.status!=='PAYMENT_DISPUTED'&&r.status!=='APPEALED')
     throw new Error('Касир ще не позначив виплату');
   if(String(data.received||'')==='NO'){
+    if(r.status==='APPEALED')
+      throw new Error('Заперечення вже подано, апеляцію розглядає адміністратор');
     var explanation=needed_(data.reason,'Поясніть, чому гроші не отримано',300);
     updateReimbursement_(r.id,{status:'PAYMENT_DISPUTED',
       dispute_reason:explanation,disputed_at:now_()});
@@ -908,6 +932,56 @@ function confirmReimbursement_(user,data){
   logAudit_(user.id,'REIMBURSEMENT_CONFIRMED','Отримувач підтвердив виплату '+r.id);
   event_('REIMBURSEMENT','Отримувач підтвердив отримання грошей: '+r.purpose,user.id,r.id);
   return {ok:true,status:'CONFIRMED'};
+}
+/**
+ * A disagreement about money received is not the same as a cash correction.
+ * An appeal never creates, updates or deletes a Ledger transaction.
+ */
+function appealReimbursement_(user,data){
+  requireRole_(user,['CASHIER']);
+  var r=reimbursement_(data.id);
+  if(r.status!=='PAYMENT_DISPUTED')
+    throw new Error('Апеляцію можна подати лише на заперечену виплату');
+  if(r.paid_by!==user.id)
+    throw new Error('Апеляцію може подати тільки касир, який зазначив виплату');
+  if(r.appeal_at||r.appeal_decision)
+    throw new Error('Апеляція цієї виплати вже подавалася або розглядалася');
+  var reason=needed_(data.reason,'Пояснення касира',1000);
+  if(reason.length<10)
+    throw new Error('Опишіть обставини передачі грошей щонайменше 10 символами');
+  if(!activeAdministrators_().some(function(a){return a.id!==user.id&&a.id!==r.requester_id;}))
+    throw new Error('Для апеляції потрібен незалежний адміністратор');
+  updateReimbursement_(r.id,{status:'APPEALED',
+    appeal_by:user.id,appeal_at:now_(),appeal_reason:reason});
+  logAudit_(user.id,'REIMBURSEMENT_APPEAL','Апеляція касира щодо '+r.id+': '+reason);
+  event_('REIMBURSEMENT','⚠ Касир оскаржив заперечення виплати: '+r.purpose+
+    '. Очікує рішення адміністратора',user.id,r.id);
+  return {ok:true,status:'APPEALED',balanceChanged:false};
+}
+function decideReimbursementAppeal_(user,data){
+  requireRole_(user,['ADMIN','RESERVE']);
+  var r=reimbursement_(data.id);
+  if(r.status!=='APPEALED'||r.appeal_decision)
+    throw new Error('Немає активної апеляції, що очікує рішення');
+  if(user.id===r.appeal_by||user.id===r.paid_by||user.id===r.requester_id)
+    throw new Error('Рішення приймає лише незалежний адміністратор');
+  var decision=String(data.decision||'');
+  if(['UPHOLD_CASHIER','REJECT_APPEAL'].indexOf(decision)<0)
+    throw new Error('Оберіть підтримати касира або відхилити апеляцію');
+  var reason=needed_(data.reason,'Мотиви рішення адміністратора',1000);
+  if(reason.length<10)
+    throw new Error('Опишіть рішення щонайменше 10 символами');
+  var newStatus=decision==='UPHOLD_CASHIER'?'ADMIN_CONFIRMED_PAYMENT':'PAYMENT_DISPUTED';
+  updateReimbursement_(r.id,{status:newStatus,appeal_decision:decision,
+    appeal_decided_by:user.id,appeal_decided_at:now_(),appeal_decision_reason:reason});
+  // Do NOT fill confirmed_by: the member never confirmed receipt.
+  logAudit_(user.id,'REIMBURSEMENT_APPEAL_DECISION',
+    (decision==='UPHOLD_CASHIER'?'Підтримано касира':'Апеляцію відхилено')+
+    ' по '+r.id+': '+reason);
+  event_('REIMBURSEMENT',
+    (decision==='UPHOLD_CASHIER'?'Адміністратор підтвердив виплату':'Адміністратор відхилив апеляцію')+
+    ' за заявкою '+r.purpose+'. Рішення видно всім.',user.id,r.id);
+  return {ok:true,status:newStatus,decision:decision,balanceChanged:false};
 }
 function commentReimbursement_(user,data){
   var r=reimbursement_(data.id);
