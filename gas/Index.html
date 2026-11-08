@@ -287,6 +287,7 @@ function peoplePage(){
       esc(u.login)+' · '+roleText(u)+' · '+(u.active?'Активний':'Заблокований')+'</div></div>';
     if(admin()){
       html+='<div class="right" style="display:flex;flex-wrap:wrap;gap:5px">';
+      html+='<button class="btn sm" data-act="change-name" data-id="'+esc(u.id)+'">Змінити ім’я</button>';
       html+='<button class="btn sm" data-act="change-login" data-id="'+esc(u.id)+'">Змінити логін</button>';
       if(u.id!==A.state.me.id&&!['ADMIN','RESERVE'].includes(u.role)){
         html+='<button class="btn sm" data-act="reset" data-id="'+esc(u.id)+'">Новий PIN / пароль</button>';
@@ -327,26 +328,37 @@ function electionRules(e){
  return {total:voters?voters.length:10,required:Number(e.required_votes)||6,allowed:!voters||voters.includes(A.state.me.id)};
 }
 function votesPage(){
+ const enabled=A.state.electionsEnabled!==false;
  const live=A.state.users.filter(u=>u.active).length;
  const active=A.state.elections.find(x=>['PROPOSED','VOTING','APPROVED'].includes(x.status));
  const list=A.state.users.filter(x=>x.active&&x.role==='MEMBER');
  const rules=electionRules(active),required=rules.required,total=rules.total;
  let content='';
  if(!active){
-   content=live<3?`<div class="card stack-sm"><h2>Вибори касира</h2><p class="status warn">Голосування доступне, коли в общаку є щонайменше 3 активні учасники. Зараз ${live} із 10. Адміністратор додає людей у розділі «Учасники».</p><p class="tiny">До початку виборів єдиний касир продовжує вести всі операції.</p></div>`:
+   content=!enabled?'<div class="card"><p class="status warn">Вибори вимкнено адміністратором. Нові ініціативи не приймаються.</p></div>':live<3?`<div class="card stack-sm"><h2>Вибори касира</h2><p class="status warn">Голосування доступне, коли в общаку є щонайменше 3 активні учасники. Зараз ${live} із 10. Адміністратор додає людей у розділі «Учасники».</p><p class="tiny">До початку виборів єдиний касир продовжує вести всі операції.</p></div>`:
    `<div class="card"><h2>Ініціатива зміни касира</h2><p class="small muted" style="margin:10px 0 16px">Один учасник висуває кандидата, інший підтримує ініціативу. Потрібно ${required} голосів «За» із ${total} активних учасників на момент початку виборів. Якщо згодом додадуть нову людину, вона зможе голосувати лише в наступних виборах.</p><form id="propose"><div class="field"><label>Кандидат</label><select class="select" name="candidateId" required>${list.map(u=>`<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}</select></div><button class="btn primary" type="submit" ${list.length?'':'disabled'}>Запропонувати голосування</button></form></div>`;
  }else{
    let bs=A.state.ballots.filter(v=>v.election_id===active.id),yes=bs.filter(v=>v.vote==='YES').length,no=bs.filter(v=>v.vote==='NO').length,voted=bs.some(v=>v.voter_id===A.state.me.id);
    content=`<div class="card stack-sm"><div class="headrow"><h2>Вибори нового касира</h2><span class="tag ${active.status==='APPROVED'?'green':'orange'}">${esc(active.status==='PROPOSED'?'Очікує підтримки':active.status==='VOTING'?'Голосування':'Потрібну більшість отримано')}</span></div><p>Кандидат: <b>${esc(nameOf(active.candidate_id))}</b></p><p class="tiny">Ініціатор: ${esc(nameOf(active.initiator))}${active.supporter?' · Підтримав: '+esc(nameOf(active.supporter)):''}</p><p class="tiny">Для обрання потрібно ${required} голосів «За» із ${total}. Склад виборців зафіксований на початку виборів.</p><div class="grid2"><div class="card"><div class="tiny">За</div><div class="metric positive">${yes} / ${total}</div></div><div class="card"><div class="tiny">Проти</div><div class="metric negative">${no} / ${total}</div></div></div>
-${active.status==='PROPOSED'&&rules.allowed&&A.state.me.id!==active.initiator?`<button class="btn primary" data-act="support-election" data-id="${esc(active.id)}">Підтримати ініціативу</button>`:''}
-${active.status==='VOTING'&&rules.allowed&&!voted?`<div class="seg"><button class="btn primary" data-act="vote" data-vote="YES" data-id="${esc(active.id)}">Голосую «За»</button><button class="btn danger" data-act="vote" data-vote="NO" data-id="${esc(active.id)}">Голосую «Проти»</button></div>`:''}${voted?'<div class="status">Ваш голос уже враховано.</div>':''}
+${enabled&&active.status==='PROPOSED'&&rules.allowed&&A.state.me.id!==active.initiator?`<button class="btn primary" data-act="support-election" data-id="${esc(active.id)}">Підтримати ініціативу</button>`:''}
+${enabled&&active.status==='VOTING'&&rules.allowed&&!voted?`<div class="seg"><button class="btn primary" data-act="vote" data-vote="YES" data-id="${esc(active.id)}">Голосую «За»</button><button class="btn danger" data-act="vote" data-vote="NO" data-id="${esc(active.id)}">Голосую «Проти»</button></div>`:''}${voted?'<div class="status">Ваш голос уже враховано.</div>':''}
 ${!rules.allowed?'<p class="status warn">Ви приєдналися після початку цих виборів, тому можете переглядати результати, але не голосувати.</p>':''}
-${active.status==='APPROVED'&&A.state.me.id===active.candidate_id?`<button class="btn primary" data-act="accept-election" data-id="${esc(active.id)}">Прийняти посаду касира</button>`:''}${active.status==='APPROVED'?'<p class="status warn">Очікується згода кандидата. Фактичну передачу грошей потрібно окремо звірити.</p>':''}
+${enabled&&active.status==='APPROVED'&&A.state.me.id===active.candidate_id?`<button class="btn primary" data-act="accept-election" data-id="${esc(active.id)}">Прийняти посаду касира</button>`:''}${active.status==='APPROVED'?'<p class="status warn">Очікується згода кандидата. Фактичну передачу грошей потрібно окремо звірити.</p>':''}
 </div>`;
  }
  let lastComplete=A.state.elections.find(x=>x.status==='COMPLETED'),handover=lastComplete&&A.state.handovers.find(x=>x.election_id===lastComplete.id);
  let handoverBox=lastComplete?(handover?`<div class="card"><h2>Передача каси</h2><p style="margin-top:10px">За обліком: <b>${euro(handover.ledger_balance)}</b></p><p>Фактично отримано: <b>${euro(handover.actual_balance)}</b></p><p>Розбіжність: <b class="${Number(handover.difference)===0?'positive':'negative'}">${euro(handover.difference)}</b></p><p class="small">${esc(handover.explanation)}</p></div>`:cashier()&&lastComplete.candidate_id===A.state.me.id?`<div class="card"><h2>Фіксація передачі каси</h2><p class="tiny" style="margin:10px 0">Обліковий залишок на момент передачі: ${euro(lastComplete.book_balance)}. Внесіть фактично отриману суму. Розбіжність буде видимою всім без автоматичного коригування балансу.</p><form id="handover"><input type="hidden" name="id" value="${esc(lastComplete.id)}"><div class="field"><label>Фактично отримано, грн</label><input class="input" name="actual" inputmode="decimal" required placeholder="0,00"></div><div class="field"><label>Пояснення (обов’язкове при розбіжності)</label><textarea class="textarea" name="explanation" maxlength="700"></textarea></div><button class="btn primary" type="submit">Зафіксувати передачу</button></form></div>`:''):'';
- return `<div class="stack"><div class="headrow"><h1>Вибори касира</h1><span class="tag">${live}/10 активних</span></div>${content}${handoverBox}<div class="card"><h2>Історія голосувань</h2>${A.state.elections.length?A.state.elections.map(x=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(nameOf(x.candidate_id))}</strong><div class="tiny">${stamp(x.created_at)}</div></div><span class="tag">${esc(x.status)}</span></div>`).join(''):'<div class="empty">Голосувань не було</div>'}</div></div>`;
+ const adminToggle=admin()?`<div class="card">
+   <div class="headrow"><h2>Керування виборами</h2>
+     <span class="tag">${enabled?'Увімкнено':'Вимкнено'}</span></div>
+   <p class="small">Лише адміністратор може змінити цей режим для всіх. Вимкнення
+     призупиняє активні вибори, зберігаючи кандидатів і всі голоси.</p>
+   <button class="btn ${enabled?'danger':'primary'}" data-act="elections-toggle"
+      data-enabled="${enabled?'false':'true'}">
+      ${enabled?'Вимкнути вибори':'Увімкнути вибори'}</button></div>`:'';
+ const disabledBanner=!enabled?`<div class="status warn">⏸ Вибори вимкнено адміністратором.
+   Голосування й прийняття повноважень призупинені. Історія збережена.</div>`:'';
+ return `<div class="stack"><div class="headrow"><h1>Вибори касира</h1><span class="tag">${live}/10 активних</span></div>${adminToggle}${disabledBanner}${content}${handoverBox}<div class="card"><h2>Історія голосувань</h2>${A.state.elections.length?A.state.elections.map(x=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(nameOf(x.candidate_id))}</strong><div class="tiny">${stamp(x.created_at)}</div></div><span class="tag">${esc(x.status)}</span></div>`).join(''):'<div class="empty">Голосувань не було</div>'}</div></div>`;
 }
 function activityPage(){return `<div class="stack"><h1>Активність та історія</h1><div class="card"><h2>Події та сповіщення</h2><p class="tiny" style="margin:9px 0">Оновлення під час відкритого застосунку приблизно щохвилини. Push при закритому застосунку в цій тестовій версії ще немає.</p>${A.state.events.map(x=>`<div class="rowitem" data-act="event" data-ref="${esc(x.ref_id)}"><div><strong>${esc(x.summary)}</strong><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join('')||'<div class="empty">Немає подій</div>'}</div><div class="card"><h2>Журнал дій</h2>${A.state.audit.map(x=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(x.action)} · ${esc(nameOf(x.actor_id))}</strong><div class="tiny clamp">${esc(x.details)}</div><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join('')||'<div class="empty">Поки немає записів</div>'}</div></div>`;}
 function fromForm(f){return Object.fromEntries(new FormData(f).entries());}
@@ -478,6 +490,23 @@ else if(act==='secret-close'){A.secret=null;render();}
 else if(act==='copy-secret'){let s=A.secret;await navigator.clipboard.writeText('ОБЩАК\nЛогін: '+s.login+'\nТимчасовий пароль: '+s.password);toast('Скопійовано. Передавайте особисто.');}
 else if(act==='reset'){if(!confirm('Створити новий тимчасовий пароль? Старий перестане діяти.'))return;let r=await request('resetPassword',{id:button.dataset.id});A.secret=r;render();}
 else if(act==='toggle'){if(!confirm('Змінити стан доступу учасника?'))return;await handler('toggleUser',{id:button.dataset.id},'Доступ оновлено.');}
+else if(act==='change-name'){
+  const account=A.state.users.find(u=>u.id===button.dataset.id);
+  if(!account)throw new Error('Користувача не знайдено');
+  const name=prompt('Нове ім’я для '+account.name,account.name);
+  if(name===null)return;
+  if(!name.trim()||name.trim().length>80)throw new Error('Вкажіть ім’я до 80 символів');
+  await handler('changeName',{id:account.id,name:name.trim()},
+    'Ім’я змінено. Історичні записи та логін не змінено.');
+}
+else if(act==='elections-toggle'){
+  if(!admin())throw new Error('Лише адміністратор змінює налаштування виборів');
+  const enable=button.dataset.enabled==='true';
+  if(!confirm(enable?'Увімкнути вибори для всіх? Призупинені голосування продовжаться.':
+    'Вимкнути вибори для всіх? Активні голосування збережуться, але будуть призупинені.'))return;
+  await handler('setElectionsEnabled',{enabled:enable},enable?
+    'Вибори ввімкнено.':'Вибори вимкнено для всіх.');
+}
 else if(act==='change-login'){
   const account=A.state.users.find(u=>u.id===button.dataset.id);
   if(!account)throw new Error('Користувача не знайдено');
