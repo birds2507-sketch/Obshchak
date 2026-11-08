@@ -104,7 +104,7 @@ function setupOwner_(){
   if(props.getProperty('SHEET_ID'))throw new Error('Базу вже налаштовано. Для тестового перезапуску використайте resetObshchakForCleanStart_().');
   var fresh=createEmptyObshchakDb_();
   props.setProperties({SHEET_ID:fresh.book.getId(),RECEIPT_FOLDER_ID:fresh.folder.getId(),
-    PEPPER:Utilities.getUuid()+Utilities.getUuid(),DB_GENERATION:Utilities.getUuid()});
+    PEPPER:Utilities.getUuid()+Utilities.getUuid(),DB_GENERATION:Utilities.getUuid(),ELECTIONS_ENABLED:'1'});
   Logger.log('НОВА ЧИСТА БАЗА: %s',fresh.book.getUrl());
   issueFirstAdminCode_(props);
 }
@@ -127,7 +127,7 @@ function resetObshchakForCleanStart_(){
     var newPepper=Utilities.getUuid()+Utilities.getUuid();
     props.setProperties({
       SHEET_ID:next.book.getId(),RECEIPT_FOLDER_ID:next.folder.getId(),
-      PEPPER:newPepper,DB_GENERATION:Utilities.getUuid()
+      PEPPER:newPepper,DB_GENERATION:Utilities.getUuid(),ELECTIONS_ENABLED:'1'
     });
     issueFirstAdminCode_(props);
     Logger.log('НОВА БАЗА ОБЩАК: %s',next.book.getUrl());
@@ -220,6 +220,8 @@ function api(action, data, token) {
     case 'toggleUser': return withLock_(function(){return toggleUser_(user,data);});
     case 'setReserve': return withLock_(function(){return setReserve_(user,data);});
     case 'changeLogin': return withLock_(function(){return changeLogin_(user,data);});
+    case 'changeName': return withLock_(function(){return changeName_(user,data);});
+    case 'setElectionsEnabled': return withLock_(function(){return setElectionsEnabled_(user,data);});
     case 'assignCashier': return withLock_(function(){return assignCashier_(user,data);});
     case 'removeUser': return withLock_(function(){return removeUser_(user,data);});
     case 'proposeElection': return withLock_(function(){return proposeElection_(user,data);});
@@ -590,6 +592,7 @@ function state_(user) {
   ensureReversalRequests_();
   return {
     me:publicUser_(user),today:today_(),
+    electionsEnabled:electionsEnabled_(),
     users:all_('Users').map(publicUser_),
     reversalRequests:all_('ReversalRequests').reverse(),
     reimbursements:reimbursements_().reverse(),
@@ -1223,6 +1226,48 @@ function toggleUser_(user,data){
   logAudit_(user.id,'ACCESS',(newActive==='1'?'Увімкнено ':'Заблоковано ')+other.login);
   return {ok:true};
 }
+/** Persistent server flag; older databases default to elections enabled. */
+function electionsEnabled_(){
+  return PropertiesService.getScriptProperties().getProperty('ELECTIONS_ENABLED')!=='0';
+}
+function requireElectionsEnabled_(){
+  if(!electionsEnabled_())
+    throw new Error('Вибори касира тимчасово вимкнені адміністратором. Заявки та голоси збережені.');
+}
+function setElectionsEnabled_(admin,data){
+  assertAdmin_(admin);
+  if(typeof data.enabled!=='boolean')
+    throw new Error('Оберіть: увімкнути або вимкнути вибори');
+  var previous=electionsEnabled_(),enabled=data.enabled;
+  if(previous===enabled)return {ok:true,enabled:enabled,alreadyExists:true};
+  var props=PropertiesService.getScriptProperties();
+  props.setProperty('ELECTIONS_ENABLED',enabled?'1':'0');
+  // Active elections are paused, not deleted. Re-enabling resumes them
+  // with precisely the same ballot history and participants.
+  logAudit_(admin.id,'ELECTIONS_SWITCH',
+    (enabled?'Увімкнув':'Вимкнув')+' вибори касира; активний процес збережено');
+  event_('ELECTION',enabled?'Адміністратор увімкнув вибори касира':
+    'Адміністратор вимкнув (призупинив) вибори касира',admin.id,'');
+  return {ok:true,enabled:enabled,activeElectionPaused:!enabled&&!!activeElection_()};
+}
+function changeName_(admin,data){
+  assertAdmin_(admin);
+  var other=findUser_(data.id);
+  if(!other||other.deleted_at||other.active!=='1')
+    throw new Error('Активного користувача не знайдено');
+  var name=needed_(data.name,'Нове ім’я користувача',80).trim();
+  if(!name)throw new Error('Ім’я не може бути порожнім');
+  // Only a display-name edit. No role, login, PIN, PersonID, balance or old
+  // ledger person_name snapshot changes. This is intentional for audit.
+  if(other.name===name)return {ok:true,name:name,alreadyExists:true};
+  var before=other.name;
+  updateUser_(other.id,{name:name});
+  logAudit_(admin.id,'NAME_CHANGE','Змінено ім’я '+before+' → '+name+
+    ' для ID '+other.id);
+  event_('USER','Адміністратор змінив ім’я учасника '+before+' → '+name,
+    admin.id,other.id);
+  return {ok:true,name:name,id:other.id};
+}
 /** Dedicated admin controls. Person/user IDs remain immutable for audit. */
 function changeLogin_(admin,data){
   assertAdmin_(admin);
@@ -1335,6 +1380,7 @@ function electionRequired_(e){return e.required_votes?Number(e.required_votes):6
 function activeElection_(){return all_('Elections').filter(function(e){return ['PROPOSED','VOTING','APPROVED'].indexOf(e.status)>=0;})[0];}
 function updateElection_(id,patch){var sh=sheet_('Elections'),rows=sh.getDataRange().getDisplayValues(),head=rows[0],row=-1;for(var i=1;i<rows.length;i++){if(rows[i][0]===id){row=i+1;break;}}if(row<0)throw new Error('Голосування не знайдено');Object.keys(patch).forEach(function(k){sh.getRange(row,head.indexOf(k)+1).setValue(String(patch[k]));});}
 function proposeElection_(user,data){
+  requireElectionsEnabled_();
   var voters=activeParticipants_();
   if(voters.length<3)throw new Error('Вибори касира доступні лише від 3 активних учасників. Зараз: '+voters.length+'.');
   var candidate=findUser_(data.candidateId);
@@ -1348,6 +1394,7 @@ function proposeElection_(user,data){
   return {ok:true};
 }
 function supportElection_(user,data){
+  requireElectionsEnabled_();
   var e=activeElection_();if(!e||e.id!==String(data.id)||e.status!=='PROPOSED')throw new Error('Ініціативу вже не можна підтримати');
   if(e.initiator===user.id)throw new Error('Другим ініціатором має бути інший учасник');
   var electors=electionElectorate_(e);
@@ -1359,6 +1406,7 @@ function supportElection_(user,data){
   return {ok:true};
 }
 function castVote_(user,data){
+  requireElectionsEnabled_();
   var e=activeElection_();if(!e||e.id!==String(data.id)||e.status!=='VOTING')throw new Error('Немає активного голосування');
   var electors=electionElectorate_(e);
   if(electors && electors.indexOf(user.id)<0)throw new Error('У цьому голосуванні беруть участь лише учасники, які були активні при його початку');
@@ -1379,6 +1427,7 @@ function castVote_(user,data){
   return {ok:true,yes:yes,no:no};
 }
 function acceptElection_(user,data){
+  requireElectionsEnabled_();
   var e=activeElection_();if(!e||e.id!==String(data.id)||e.status!=='APPROVED'||e.candidate_id!==user.id)throw new Error('Підтвердити призначення може тільки обраний кандидат');
   var old=all_('Users').filter(function(u){return u.role==='CASHIER'&&u.active==='1';})[0];
   if(!old)throw new Error('Не знайдено попереднього касира');
@@ -1521,7 +1570,8 @@ function initializeObshchak(){
     // Users and DeviceTokens have already been erased.
     props.setProperties({
       PEPPER:Utilities.getUuid()+Utilities.getUuid(),
-      DB_GENERATION:Utilities.getUuid()
+      DB_GENERATION:Utilities.getUuid(),
+      ELECTIONS_ENABLED:'1'
     });
     props.deleteProperty('FIRST_ADMIN_CODE_HASH');
     props.deleteProperty('FIRST_ADMIN_CODE_UNTIL');
