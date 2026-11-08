@@ -254,6 +254,11 @@ public class MainActivity extends ComponentActivity {
   private void topBar(LinearLayout root){
     LinearLayout bar=row();bar.setPadding(dp(12),dp(7),dp(12),dp(9));
     bar.setBackgroundColor(Color.WHITE);root.addView(bar,new LinearLayout.LayoutParams(-1,dp(78)));
+    TextView back=text("‹",32,NAVY,true);
+    back.setGravity(Gravity.CENTER);
+    back.setContentDescription("Назад");
+    bar.addView(back,new LinearLayout.LayoutParams(dp(34),-1));
+    back.setOnClickListener(v->handleAppBack());
     TextView menu=text("☰",26,NAVY,true);
     menu.setGravity(Gravity.CENTER);bar.addView(menu,new LinearLayout.LayoutParams(dp(45),-1));
     menu.setOnClickListener(v->showMenu());
@@ -1631,6 +1636,71 @@ public class MainActivity extends ComponentActivity {
 
   private boolean isAdmin(){return settings.role().equals("ADMIN")||settings.role().equals("RESERVE");}
 
+  private void drawMyContributions(){
+    textInto(screen,"Мій кабінет · Мої внески",23,NAVY,true);
+    JSONObject me=state.optJSONObject("me");
+    textInto(screen,(me==null?settings.username():me.optString("name"))+
+      " · внески прив’язані до вашого облікового запису",13,MUTED,false);
+    JSONArray contributions=state.optJSONArray("myContributions");
+    int count=0,reversed=0,open=0;long total=0,active=0;
+    if(contributions!=null)for(int i=0;i<contributions.length();i++){
+      JSONObject c=contributions.optJSONObject(i);if(c==null)continue;
+      count++;long cents=c.optLong("amount");
+      total+=cents;
+      if("REVERSED".equals(c.optString("status")))reversed++;
+      else active+=cents;
+      if("PENDING".equals(c.optString("status"))||
+          "DISPUTED".equals(c.optString("status")))open++;
+    }
+    LinearLayout summary=card(screen);
+    summary.setBackground(background(0xffe8f4f2,14));
+    textInto(summary,"Мої внески: "+count+" · Загалом: "+money(total)+" ₴",17,NAVY,true);
+    textInto(summary,"Чинні після сторнувань: "+money(active)+" ₴",16,TEAL,true);
+    textInto(summary,"Сторновано: "+reversed+" · Заявок на розгляді: "+open,
+      13,MUTED,false);
+    textInto(screen,"У кабінеті показані лише внески, які касир прив’язав до вашого ID. Якщо внесок записаний лише за ім’ям, попросіть касира звірити операцію — автоматично за ПІБ такі внески не додаються.",
+      12,MUTED,false);
+    if(contributions==null||contributions.length()==0){
+      textInto(screen,"Підтверджених Google внесків на ваш обліковий запис поки немає.",
+        14,MUTED,false);return;
+    }
+    for(int i=0;i<contributions.length();i++){
+      JSONObject contribution=contributions.optJSONObject(i);
+      if(contribution==null)continue;
+      final String id=contribution.optString("id");
+      String status=contribution.optString("status");
+      LinearLayout box=card(screen);
+      if(status.equals("REVERSED"))box.setBackground(background(0xffffeded,14));
+      else if(status.equals("PENDING")||status.equals("DISPUTED"))
+        box.setBackground(background(0xfffff4dc,14));
+      String label=status.equals("REVERSED")?"✕ СТОРНОВАНО":
+        status.equals("PENDING")?"⚠ Заявка на сторнування":
+        status.equals("DISPUTED")?"⚠ Є заперечення сторнування":
+        "✓ Чинний внесок";
+      textInto(box,label,14,status.equals("REVERSED")?0xffb13c42:
+        status.equals("ACTIVE")?TEAL:0xffa17200,true);
+      textInto(box,money(contribution.optLong("amount"))+" ₴ · "+
+        displayDate(contribution.optString("date")),18,NAVY,true);
+      textInto(box,contribution.optString("purpose"),13,MUTED,false);
+      if(!contribution.optString("reversal_reason").isEmpty())
+        textInto(box,"Причина заявки: "+contribution.optString("reversal_reason"),12,MUTED,false);
+      if(status.equals("REVERSED"))
+        textInto(box,"Сторнування проведено і відображено в загальній касі.",12,0xffb13c42,true);
+      if(status.equals("PENDING")||status.equals("DISPUTED")){
+        button(box,"Переглянути сторнування / заперечити",
+          ()->go("reversals"),false);
+      }
+      button(box,"Деталі внеску",()->{
+        JSONArray ledger=state.optJSONArray("ledger");
+        if(ledger!=null)for(int j=0;j<ledger.length();j++){
+          JSONObject tx=ledger.optJSONObject(j);
+          if(tx!=null&&id.equals(tx.optString("id"))){showDetail(tx);return;}
+        }
+        message("Запис очікує оновлення журналу");refresh();
+      },false);
+    }
+  }
+
   private void drawUsers(){
     textInto(screen,"Користувачі та доступ",23,NAVY,true);
     JSONArray users=state.optJSONArray("users");
@@ -1643,6 +1713,16 @@ public class MainActivity extends ComponentActivity {
       if(u.optString("role").equals("CASHIER")&&u.optBoolean("active"))hasCashier=true;
     }
     textInto(screen,active+" із 10 активних",15,TEAL,true);
+    if(isAdmin()){
+      LinearLayout adminElection=card(screen);
+      boolean enabled=state.optBoolean("electionsEnabled",true);
+      textInto(adminElection,"Вибори касира: "+(enabled?"увімкнені":"вимкнені"),
+        15,NAVY,true);
+      textInto(adminElection,"Коли вимкнено, пункт «Вибори касира» ніхто не бачить у меню. Голоси зберігаються.",
+        12,MUTED,false);
+      button(adminElection,enabled?"⏸ Вимкнути вибори":"▶ Увімкнути вибори",
+        ()->showElectionToggleDialog(!enabled),false);
+    }
     textInto(screen,"Адміністратор створює користувачів, міняє логіни й касира. Старі внески, чеки та історія вилучених людей залишаються для перевірки.",
       12,MUTED,false);
     if(isCashier()&&!adminExists){
@@ -2540,7 +2620,8 @@ public class MainActivity extends ComponentActivity {
       if(changed)getPreferences(MODE_PRIVATE).edit().putString("last_state",nextState).apply();
       if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
       JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
-      if(changed&&(page.equals("home")||page.equals("history")||page.equals("debts")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity")))draw();
+      if(changed&&(page.equals("home")||page.equals("mycontributions")||
+        page.equals("history")||page.equals("debts")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity")))draw();
       if(secure.deviceToken().isEmpty())registerDeviceKey();
     });
   }
