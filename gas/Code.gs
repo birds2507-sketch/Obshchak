@@ -1269,8 +1269,8 @@ function assignCashier_(admin,data){
 function removeUser_(admin,data){
   assertAdmin_(admin);
   var other=findUser_(data.id);
-  if(!other||other.deleted_at||other.active!=='1')
-    throw new Error('Учасника вже вилучено або його доступ заблокований');
+  if(!other||other.deleted_at)
+    throw new Error('Учасника не знайдено або його вже вилучено');
   if(other.id===admin.id||other.role==='ADMIN'||other.role==='RESERVE')
     throw new Error('Адміністратора не можна видалити: передайте роль окремо');
   if(other.role==='CASHIER')
