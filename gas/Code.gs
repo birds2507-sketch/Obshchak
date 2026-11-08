@@ -40,7 +40,12 @@ function doPost(e) {
     if (!packet || typeof packet.action !== 'string') throw new Error('Не вказана дія');
     // Login does not require token; all other calls pass through existing auth_ and role checks.
     var result;
-    if (packet.action==='syncTransaction' || packet.action==='syncReceipt' || packet.action==='syncComment') {
+    if (packet.action==='deviceEvents') {
+      // Device key is tied to an active member and expires automatically.
+      // Return only event metadata; no private account or receipt files.
+      authDevice_(String(packet.token||''));
+      result={events:all_('Events').slice(-120).reverse()};
+    } else if (packet.action==='syncTransaction' || packet.action==='syncReceipt' || packet.action==='syncComment') {
       var deviceUser=authDevice_(String(packet.token||''));
       result=withLock_(function(){
         if(packet.action==='syncTransaction')return addTransaction_(deviceUser,packet.data||{});
