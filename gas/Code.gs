@@ -12,7 +12,9 @@ var CFG_ = {
   SESSION_SECONDS: 21600,
   HEADERS: {
     Users: ['id','login','name','role','salt','hash','must_change','active','created_at','version'],
-    Ledger: ['id','date','created_at','kind','amount','person_id','person_name','method','category','purpose','no_receipt_reason','correction_of','created_by','expense_target'],
+    Ledger: ['id','date','created_at','kind','amount','person_id','person_name','method','category','purpose','no_receipt_reason','correction_of','created_by','expense_target','reimbursement_id'],
+    Reimbursements: ['id','created_at','requester_id','amount','purpose','category','expense_target','receipt_id','status','approved_by','approved_at','paid_by','paid_at','ledger_id','confirmed_by','confirmed_at','rejected_by','rejected_at','rejection_reason','disputed_at','dispute_reason'],
+    ReimbursementComments: ['id','claim_id','author_id','message','created_at'],
     Receipts: ['id','ledger_id','file_id','filename','mime','size','created_at','created_by'],
     Comments: ['id','ledger_id','author_id','message','created_at'],
     Elections: ['id','initiator','supporter','candidate_id','status','created_at','updated_at','book_balance','electorate','required_votes'],
@@ -51,11 +53,12 @@ function doPost(e) {
       // Return only event metadata; no private account or receipt files.
       authDevice_(String(packet.token||''));
       result={events:all_('Events').slice(-120).reverse()};
-    } else if (packet.action==='syncTransaction' || packet.action==='syncReceipt' || packet.action==='syncComment') {
+    } else if (packet.action==='syncTransaction' || packet.action==='syncReceipt' || packet.action==='syncComment' || packet.action==='syncReimbursement') {
       var deviceUser=authDevice_(String(packet.token||''));
       result=withLock_(function(){
         if(packet.action==='syncTransaction')return addTransaction_(deviceUser,packet.data||{});
         if(packet.action==='syncReceipt')return addReceipt_(deviceUser,packet.data||{});
+        if(packet.action==='syncReimbursement')return createReimbursement_(deviceUser,packet.data||{});
         return comment_(deviceUser,packet.data||{});
       });
     } else result=api(packet.action, packet.data || {}, packet.token || '');
@@ -120,6 +123,11 @@ function api(action, data, token) {
     case 'decideReversal': return withLock_(function(){return decideReversal_(user,data);});
     case 'disputeReversal': return withLock_(function(){return disputeReversal_(user,data);});
     case 'ackReversal': return withLock_(function(){return acknowledgeReversal_(user,data);});
+    case 'createReimbursement': return withLock_(function(){return createReimbursement_(user,data);});
+    case 'decideReimbursement': return withLock_(function(){return decideReimbursement_(user,data);});
+    case 'payReimbursement': return withLock_(function(){return payReimbursement_(user,data);});
+    case 'confirmReimbursement': return withLock_(function(){return confirmReimbursement_(user,data);});
+    case 'commentReimbursement': return withLock_(function(){return commentReimbursement_(user,data);});
     case 'addReceipt': return withLock_(function(){return addReceipt_(user,data);});
     case 'getReceipt': return getReceipt_(user,data);
     case 'comment': return withLock_(function(){return comment_(user,data);});
@@ -198,11 +206,23 @@ function ensureExpenseTargetColumn_(){
   sheet.getRange(1,14).setValue('expense_target');
   sheet.getRange(1,14).setFontWeight('bold').setBackground('#e2e8f0');
 }
+function ensureReimbursementLedgerColumn_(){
+  ensureExpenseTargetColumn_();
+  var sh=sheet_('Ledger');
+  var header=sh.getRange(1,1,1,Math.max(14,sh.getLastColumn())).getDisplayValues()[0];
+  if(header[14]==='reimbursement_id')return;
+  if(header.indexOf('reimbursement_id')>=0)
+    throw new Error('Неправильне розташування reimbursement_id у журналі');
+  sh.insertColumnAfter(14);
+  sh.getRange(1,15).setValue('reimbursement_id');
+  sh.getRange(1,15).setFontWeight('bold').setBackground('#e2e8f0');
+}
 function append_(name, values) {
   if(name==='Ledger'){
-    ensureExpenseTargetColumn_();
-    if(values.length===13)values=values.concat(['']);
-    if(values.length!==14)throw new Error('Неправильна довжина запису журналу');
+    ensureReimbursementLedgerColumn_();
+    if(values.length===13)values=values.concat(['','']);
+    if(values.length===14)values=values.concat(['']);
+    if(values.length!==15)throw new Error('Неправильна довжина запису журналу');
   }
   sheet_(name).appendRow(values.map(function(v){
     var s=String(v===null || v===undefined ? '' : v);
@@ -401,7 +421,7 @@ function checkFirebasePush_(){
 
 /** A notification failure may never roll back or duplicate a ledger operation. */
 function sendFirebaseEvent_(eventId,type,summary,actorId){
-  if(['TRANSACTION','CORRECTION','RECEIPT','COMMENT','ELECTION','HANDOVER'].indexOf(type)<0)return;
+  if(['TRANSACTION','CORRECTION','RECEIPT','COMMENT','ELECTION','HANDOVER','REIMBURSEMENT'].indexOf(type)<0)return;
   var sa=fcmServiceAccount_();
   if(!sa)return; // The old 15-minute notification polling remains available.
   var sheet=db_().getSheetByName('PushTokens');
@@ -471,6 +491,8 @@ function state_(user) {
     me:publicUser_(user),today:today_(),
     users:all_('Users').map(publicUser_),
     reversalRequests:all_('ReversalRequests').reverse(),
+    reimbursements:reimbursements_().reverse(),
+    reimbursementComments:all_('ReimbursementComments').reverse(),
     // Stable authoritative insertion order; multiple entries in one second stay ordered.
     ledger:ledger.sort(function(a,b){return Number(b.posting_order)-Number(a.posting_order);}),
     receipts:receipts,
@@ -740,6 +762,158 @@ function addReceipt_(user,data) {
   logAudit_(user.id,'RECEIPT','Файл до операції '+id);
   return {ok:true,item:item};
 }
+/** Reimbursements are separate liabilities; only PAY creates one OUT row. */
+function ensureReimbursements_(){
+  var book=db_();
+  ['Reimbursements','ReimbursementComments'].forEach(function(name){
+    if(book.getSheetByName(name))return;
+    var sh=book.insertSheet(name),head=CFG_.HEADERS[name];
+    sh.appendRow(head);
+    sh.setFrozenRows(1);
+    sh.getRange(1,1,1,head.length).setFontWeight('bold').setBackground('#e2e8f0');
+    sh.getRange(2,1,Math.max(1,sh.getMaxRows()-1),head.length).setNumberFormat('@');
+  });
+}
+function reimbursements_(){ensureReimbursements_();return all_('Reimbursements');}
+function reimbursement_(id){
+  var item=reimbursements_().filter(function(x){return x.id===String(id||'');})[0];
+  if(!item)throw new Error('Заявку на відшкодування не знайдено');
+  return item;
+}
+function updateReimbursement_(id,fields){
+  var sh=sheet_('Reimbursements'),rows=sh.getDataRange().getDisplayValues();
+  var pos=rows.findIndex(function(row,i){return i>0&&row[0]===id;});
+  if(pos<0)throw new Error('Заявку не знайдено');
+  Object.keys(fields).forEach(function(name){
+    var col=CFG_.HEADERS.Reimbursements.indexOf(name);
+    if(col<0)throw new Error('Невідомий реквізит відшкодування');
+    sh.getRange(pos+1,col+1).setValue(String(fields[name]));
+  });
+}
+function createReimbursement_(user,data){
+  // Any active member (including cashier/admin) may buy for the group.
+  var id=String(data.clientId||''),amount=amount_(data.amount);
+  if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(id))throw new Error('Некоректний ID заявки');
+  var description=needed_(data.purpose,'Що придбано',300);
+  var direction=String(data.expenseTarget||'').trim();
+  if(['МП','ГМЕ 1','ГМЕ 2'].indexOf(direction)<0)
+    throw new Error('Оберіть напрям МП, ГМЕ 1 або ГМЕ 2');
+  var category=needed_(data.category,'Категорія покупки',80);
+  var prior=reimbursements_().filter(function(x){return x.id===id;})[0];
+  if(prior){
+    if(prior.requester_id!==user.id||Number(prior.amount)!==amount||
+       prior.purpose!==description||prior.category!==category||prior.expense_target!==direction)
+      throw new Error('Повторна заявка з тим самим ID, але іншими даними');
+    return {ok:true,id:id,status:prior.status,alreadyExists:true};
+  }
+  var receipt=validReceipt_(data.receipt);
+  if(!receipt)throw new Error('Для відшкодування обов’язково прикріпіть чек');
+  // Idempotent upload: the file's receipt ID equals the claim ID, in another sheet.
+  var receiptId=id,receiptMarker='CLAIM:'+id;
+  var old=all_('Receipts').filter(function(x){return x.id===receiptId;})[0];
+  if(old){
+    if(old.created_by!==user.id||old.ledger_id!==receiptMarker)
+      throw new Error('Чек із цим ID уже належить іншій операції');
+  }else saveReceipt_(receipt,receiptMarker,user,receiptId);
+  append_('Reimbursements',[id,now_(),user.id,String(amount),description,category,direction,
+    receiptId,'REQUESTED','','','','','','','','','','','','']);
+  logAudit_(user.id,'REIMBURSEMENT_REQUEST','Заявка '+id+' на '+amount+' коп.');
+  event_('REIMBURSEMENT','Нова заявка на відшкодування від '+user.name+': '+
+    (amount/100).toFixed(2)+' ₴ — '+description,user.id,id);
+  return {ok:true,id:id,status:'REQUESTED'};
+}
+function decideReimbursement_(user,data){
+  requireRole_(user,['CASHIER']);
+  var r=reimbursement_(data.id);
+  if(r.status!=='REQUESTED')throw new Error('Заявку вже розглянуто');
+  if(r.requester_id===user.id)
+    throw new Error('Касир не може сам собі погодити відшкодування');
+  var decision=String(data.decision||'');
+  if(decision!=='APPROVE'&&decision!=='REJECT')throw new Error('Оберіть рішення');
+  if(decision==='REJECT'){
+    var reason=needed_(data.reason,'Причина відмови',300);
+    updateReimbursement_(r.id,{status:'REJECTED',rejected_by:user.id,
+      rejected_at:now_(),rejection_reason:reason});
+    logAudit_(user.id,'REIMBURSEMENT_REJECT','Заявку '+r.id+' відхилено: '+reason);
+    event_('REIMBURSEMENT','Відшкодування відхилено: '+r.purpose,user.id,r.id);
+    return {ok:true,status:'REJECTED'};
+  }
+  if(!all_('Receipts').some(function(x){
+    return x.id===r.receipt_id&&x.ledger_id==='CLAIM:'+r.id;
+  }))throw new Error('Чек заявки відсутній');
+  updateReimbursement_(r.id,{status:'APPROVED',approved_by:user.id,approved_at:now_()});
+  logAudit_(user.id,'REIMBURSEMENT_APPROVE','Погоджено борг '+r.id);
+  event_('REIMBURSEMENT','Касир погодив відшкодування: '+r.purpose,user.id,r.id);
+  return {ok:true,status:'APPROVED'};
+}
+function payReimbursement_(user,data){
+  requireRole_(user,['CASHIER']);
+  var r=reimbursement_(data.id);
+  if(!['APPROVED','PAID_PENDING_CONFIRMATION','PAYMENT_DISPUTED'].includes(r.status))
+    throw new Error('Спочатку погодьте заявку');
+  if(r.requester_id===user.id)throw new Error('Касир не може сам собі виплатити відшкодування');
+  var found=all_('Ledger').filter(function(x){return x.reimbursement_id===r.id;})[0];
+  if(!found){
+    if(r.status!=='APPROVED')throw new Error('Немає фінансового запису відшкодування: потрібна перевірка');
+    var ledgerId=Utilities.getUuid();
+    append_('Ledger',[ledgerId,today_(),now_(),'OUT',String(-Number(r.amount)),
+      r.requester_id,'','','','Борги / Відшкодування',
+      'Відшкодування '+r.purpose+' — '+nameForUser_(r.requester_id),
+      'Чек у заявці '+r.id,'',user.id,r.expense_target,r.id]);
+    found={id:ledgerId};
+  }
+  if(r.status==='APPROVED'){
+    updateReimbursement_(r.id,{status:'PAID_PENDING_CONFIRMATION',
+      paid_by:user.id,paid_at:now_(),ledger_id:found.id});
+    logAudit_(user.id,'REIMBURSEMENT_PAID','Виплачено '+r.id+'; фінансовий запис '+found.id);
+    event_('REIMBURSEMENT','Касир позначив виплату: '+r.purpose+
+      '. Очікується підтвердження отримувача',user.id,r.id);
+  }
+  return {ok:true,status:r.status==='APPROVED'?'PAID_PENDING_CONFIRMATION':r.status,
+    ledgerId:found.id,alreadyExists:r.status!=='APPROVED'};
+}
+function nameForUser_(id){
+  var person=findUser_(id);
+  return person?person.name:'Учасник';
+}
+function confirmReimbursement_(user,data){
+  var r=reimbursement_(data.id);
+  if(r.requester_id!==user.id)throw new Error('Підтвердити гроші може лише отримувач');
+  if(r.status==='CONFIRMED')return {ok:true,status:'CONFIRMED',alreadyExists:true};
+  if(r.status!=='PAID_PENDING_CONFIRMATION'&&r.status!=='PAYMENT_DISPUTED')
+    throw new Error('Касир ще не позначив виплату');
+  if(String(data.received||'')==='NO'){
+    var explanation=needed_(data.reason,'Поясніть, чому гроші не отримано',300);
+    updateReimbursement_(r.id,{status:'PAYMENT_DISPUTED',
+      dispute_reason:explanation,disputed_at:now_()});
+    logAudit_(user.id,'REIMBURSEMENT_DISPUTE','Отримувач не підтвердив виплату '+r.id);
+    event_('REIMBURSEMENT','⚠ Отримувач заперечує виплату: '+r.purpose,
+      user.id,r.id);
+    return {ok:true,status:'PAYMENT_DISPUTED'};
+  }
+  if(String(data.received||'')!=='YES')throw new Error('Підтвердіть або заперечте отримання');
+  updateReimbursement_(r.id,{status:'CONFIRMED',confirmed_by:user.id,confirmed_at:now_()});
+  logAudit_(user.id,'REIMBURSEMENT_CONFIRMED','Отримувач підтвердив виплату '+r.id);
+  event_('REIMBURSEMENT','Отримувач підтвердив отримання грошей: '+r.purpose,user.id,r.id);
+  return {ok:true,status:'CONFIRMED'};
+}
+function commentReimbursement_(user,data){
+  var r=reimbursement_(data.id);
+  var msg=needed_(data.message,'Коментар',1500);
+  var id=String(data.clientId||'');
+  if(id&&!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(id))
+    throw new Error('Невірний ID коментаря');
+  var previous=id?all_('ReimbursementComments').filter(function(x){return x.id===id;})[0]:null;
+  if(previous){
+    if(previous.claim_id!==r.id||previous.author_id!==user.id||previous.message!==msg)
+      throw new Error('Інший коментар із тим самим ID');
+    return {ok:true,alreadyExists:true};
+  }
+  append_('ReimbursementComments',[id||Utilities.getUuid(),r.id,user.id,msg,now_()]);
+  event_('REIMBURSEMENT','Коментар до відшкодування: '+r.purpose,user.id,r.id);
+  return {ok:true};
+}
+
 function getReceipt_(user,data){
   var id=String(data.id||''), item=all_('Receipts').filter(function(r){return r.id===id;})[0];
   if(!item)throw new Error('Чек не знайдено');
