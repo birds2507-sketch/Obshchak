@@ -219,7 +219,7 @@ public class MainActivity extends ComponentActivity {
 
     if(page.equals("login")||page.equals("password")){
       LinearLayout loginHeader=row();screen.addView(loginHeader);
-      TextView loginLogo=text("₴  ОБЩАК ver."+BuildConfig.VERSION_NAME,21,TEAL,true);
+      TextView loginLogo=text("₴  ОБЩАК v"+BuildConfig.VERSION_NAME,21,TEAL,true);
       loginHeader.addView(loginLogo,new LinearLayout.LayoutParams(0,-2,1f));
       TextView loginGear=text("⚙",27,TEAL,true);
       loginGear.setGravity(Gravity.RIGHT);loginGear.setContentDescription("Налаштування підключення");
@@ -264,7 +264,7 @@ public class MainActivity extends ComponentActivity {
     menu.setOnClickListener(v->showMenu());
     LinearLayout title=new LinearLayout(this);title.setOrientation(LinearLayout.VERTICAL);
     bar.addView(title,new LinearLayout.LayoutParams(0,-2,1f));
-    textInto(title,"ОБЩАК ver."+BuildConfig.VERSION_NAME,19,NAVY,true);
+    textInto(title,"ОБЩАК v"+BuildConfig.VERSION_NAME,19,NAVY,true);
     textInto(title,"Облік спільної каси «Тупіка»",11,MUTED,false);
     title.setContentDescription("Повернутися на головну");
     title.setOnClickListener(v->go("home"));
@@ -313,7 +313,7 @@ public class MainActivity extends ComponentActivity {
     }
     String[][] tail={
       {"Події та сповіщення","activity"},{"Оновити дані","refresh"},
-      {"Налаштування","settings"},{"Відкрити вебверсію","web"},
+      {"Налаштування","settings"},
       {"Вихід з акаунта","logout"}
     };
     for(String[] item:tail){labels.add(item[0]);targets.add(item[1]);}
@@ -324,10 +324,6 @@ public class MainActivity extends ComponentActivity {
         if(target.equals("refresh")){refresh();return;}
         if(target.equals("income")){showFilteredHistory("IN");return;}
         if(target.equals("expenses")){showFilteredHistory("OUT");return;}
-        if(target.equals("web")){
-          try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(settings.url())));}
-          catch(Exception ex){message(ex.getMessage());}return;
-        }
         go(target);
       }).show();
   }
