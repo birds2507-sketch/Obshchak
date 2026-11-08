@@ -2000,6 +2000,9 @@ public class MainActivity extends ComponentActivity {
       return "Касир позначив виплату · очікує отримувача";
     if(status.equals("CONFIRMED"))return "✓ Отримувач підтвердив гроші";
     if(status.equals("PAYMENT_DISPUTED"))return "⚠ Отримувач не підтверджує виплату";
+    if(status.equals("APPEALED"))return "⚖ Касир подав апеляцію адміністратору";
+    if(status.equals("ADMIN_CONFIRMED_PAYMENT"))
+      return "⚖ Адміністратор підтвердив виплату (отримувач не підтвердив)";
     if(status.equals("REJECTED"))return "Заявку відхилено";
     return "⟳ На синхронізації";
   }
@@ -2016,6 +2019,20 @@ public class MainActivity extends ComponentActivity {
     try{result.put("id",id);result.put(key,value);}catch(Exception ignored){}
     return result;
   }
+  private void adminDebtAppeal(String id,String decision){
+    prompt("Обґрунтуйте рішення адміністратора",reason->{
+      if(reason.trim().length()<10){
+        message("Пояснення має містити щонайменше 10 символів");return;
+      }
+      JSONObject body=debtArgs(id,"decision",decision);
+      try{body.put("reason",reason.trim());}catch(Exception ignored){}
+      debtAction("decideReimbursementAppeal",id,body,
+        decision.equals("UPHOLD_CASHIER")?
+          "Визнати факт виплати за рішенням адміністратора? Це не буде підтвердженням Сергія і не змінить залишок. Рішення побачать усі.":
+          "Відхилити апеляцію? Виплата залишиться спірною без додаткового списання.");
+    });
+  }
+
   private void drawDebts(){
     textInto(screen,"Борги / Відшкодування",22,NAVY,true);
     textInto(screen,"Усі учасники бачать заявки, чеки, погодження, виплату й підтвердження отримання.",
@@ -2030,7 +2047,8 @@ public class MainActivity extends ComponentActivity {
       if(d.optString("status").equals("REQUESTED")||d.optString("status").equals("APPROVED")){
         pending++;total+=d.optLong("amount");
       }else if(d.optString("status").equals("PAID_PENDING_CONFIRMATION")||
-               d.optString("status").equals("PAYMENT_DISPUTED"))unconfirmed++;
+               d.optString("status").equals("PAYMENT_DISPUTED")||
+               d.optString("status").equals("APPEALED"))unconfirmed++;
     }
     LinearLayout summary=card(screen);
     summary.setBackground(background(0xffe9f4ff,15));
@@ -2061,7 +2079,7 @@ public class MainActivity extends ComponentActivity {
       JSONObject claim=remote.optJSONObject(i);if(claim==null)continue;
       LinearLayout box=card(screen);
       String status=claim.optString("status");
-      if(status.equals("PAYMENT_DISPUTED"))
+      if(status.equals("PAYMENT_DISPUTED")||status.equals("APPEALED"))
         box.setBackground(background(0xffffe9e7,13));
       else if(status.equals("REQUESTED"))
         box.setBackground(background(0xfffff5e2,13));
@@ -2070,7 +2088,7 @@ public class MainActivity extends ComponentActivity {
       textInto(box,claim.optString("purpose")+" · "+claim.optString("category"),
         13,MUTED,false);
       textInto(box,claim.optString("expense_target")+" · "+debtStatusLabel(status),
-        12,status.equals("PAYMENT_DISPUTED")?0xffb14545:TEAL,true);
+        12,(status.equals("PAYMENT_DISPUTED")||status.equals("APPEALED"))?0xffb14545:TEAL,true);
       button(box,"Деталі · чек · обговорення",()->showDebtDetail(claim),false);
     }
   }
@@ -2103,6 +2121,24 @@ public class MainActivity extends ComponentActivity {
         13,0xffaa4545,true);
     if(!claim.optString("ledger_id").isEmpty())
       textInto(content,"Витрата каси: "+claim.optString("ledger_id"),11,MUTED,false);
+    if(!claim.optString("appeal_reason").isEmpty()){
+      textInto(content,"Апеляція касира: "+claim.optString("appeal_reason"),
+        14,0xffa44920,true);
+      textInto(content,"Подав: "+nameOf(claim.optString("appeal_by"))+
+        " · "+claim.optString("appeal_at"),12,MUTED,false);
+    }
+    if(!claim.optString("appeal_decision").isEmpty()){
+      boolean upheld="UPHOLD_CASHIER".equals(claim.optString("appeal_decision"));
+      textInto(content,upheld?"⚖ Адміністратор підтримав касира":
+        "⚖ Адміністратор відхилив апеляцію касира",14,upheld?TEAL:0xffb44b40,true);
+      textInto(content,"Обґрунтування: "+claim.optString("appeal_decision_reason"),
+        13,NAVY,false);
+      textInto(content,"Рішення: "+nameOf(claim.optString("appeal_decided_by"))+
+        " · "+claim.optString("appeal_decided_at"),12,MUTED,false);
+      if(upheld)textInto(content,
+        "Це рішення адміністратора, а НЕ особисте підтвердження отримувача.",
+        12,0xffaa4d30,true);
+    }
     if(isCashier()&&status.equals("REQUESTED")&&!settings.userId().equals(claim.optString("requester_id"))){
       button(content,"✓ Погодити борг",()->debtAction("decideReimbursement",id,
         debtArgs(id,"decision","APPROVE"),"Погодити борг? Каса поки не списується."),true);
@@ -2117,8 +2153,29 @@ public class MainActivity extends ComponentActivity {
         debtArgs(id,"id",id),
         "Підтвердіть фактичну передачу грошей. Це створить одну витрату каси, а учасник підтвердить отримання."),true);
     }
+    if(isCashier()&&status.equals("PAYMENT_DISPUTED")&&
+       settings.userId().equals(claim.optString("paid_by"))&&
+       claim.optString("appeal_at").isEmpty()){
+      button(content,"⚖ Подати апеляцію адміністратору",
+        ()->prompt("Поясніть обставини передачі грошей",reason->{
+          if(reason.trim().length()<10){
+            message("Опишіть обставини щонайменше 10 символами");return;
+          }
+          debtAction("appealReimbursement",id,debtArgs(id,"reason",reason.trim()),
+            "Подати публічну апеляцію? Залишок каси не зміниться.");
+        }),false);
+    }
+    if(isAdmin()&&status.equals("APPEALED")&&
+       !settings.userId().equals(claim.optString("paid_by"))&&
+       !settings.userId().equals(claim.optString("requester_id"))){
+      button(content,"✓ Підтвердити виплату за рішенням адміністратора",
+        ()->adminDebtAppeal(id,"UPHOLD_CASHIER"),true);
+      button(content,"✕ Відхилити апеляцію касира",
+        ()->adminDebtAppeal(id,"REJECT_APPEAL"),false);
+    }
     if(settings.userId().equals(claim.optString("requester_id"))&&
-       (status.equals("PAID_PENDING_CONFIRMATION")||status.equals("PAYMENT_DISPUTED"))){
+       (status.equals("PAID_PENDING_CONFIRMATION")||status.equals("PAYMENT_DISPUTED")||
+        status.equals("APPEALED"))){
       button(content,"✓ Гроші отримав",()->debtAction("confirmReimbursement",id,
         debtArgs(id,"received","YES"),"Підтверджуєте отримання всіх грошей?"),true);
       if(status.equals("PAID_PENDING_CONFIRMATION"))
