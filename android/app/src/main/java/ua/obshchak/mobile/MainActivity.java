@@ -725,12 +725,18 @@ public class MainActivity extends ComponentActivity {
     if(ledger==null||ledger.length()==0){
       textInto(container,"Операцій немає або дані ще не завантажені",14,MUTED,false);return;
     }
-    int total=0;
+
+    // Compute summaries on ALL matches, independently of the 200 displayed rows.
+    // "Без чека" counts actual OUT records only; reversals are separate corrections.
+    ArrayList<JSONObject> visible=new ArrayList<>();
+    int matched=0,expensesCount=0,withoutReceiptCount=0;
+    long expensesCents=0L,withoutReceiptCents=0L;
     for(int i=0;i<ledger.length();i++){
       JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
       String kind=x.optString("kind");
-      int count=receiptCounts.getOrDefault(x.optString("id"),0);
-      if(historyWithoutReceipt&&(!kind.equals("OUT")||count>0))continue;
+      int receiptCount=receiptCounts.getOrDefault(x.optString("id"),0);
+      boolean missing=kind.equals("OUT")&&receiptCount==0;
+      if(historyWithoutReceipt&&!missing)continue;
       if(!query.isEmpty()){
         String amount=money(Math.abs(x.optLong("amount"))).replace(" ","").replace("\u00a0","");
         String number=String.format(Locale.US,"%.2f",Math.abs(x.optLong("amount"))/100.0);
@@ -740,28 +746,58 @@ public class MainActivity extends ComponentActivity {
            !displayDate(date).contains(query) && !date.contains(query) &&
            !amount.contains(compact) && !number.contains(compact.replace(',','.')))continue;
       }
-      total++;
-      if(total>200)continue;
+      matched++;
+      if(kind.equals("OUT")){
+        expensesCount++;
+        expensesCents+=Math.abs(x.optLong("amount"));
+        if(missing){
+          withoutReceiptCount++;
+          withoutReceiptCents+=Math.abs(x.optLong("amount"));
+        }
+      }
+      if(visible.size()<200)visible.add(x);
+    }
+
+    LinearLayout summary=card(container);
+    summary.setBackground(background(historyWithoutReceipt?0xfffff2cf:0xffe8f4f2,15));
+    textInto(summary,historyWithoutReceipt?
+        ("Витрат без чеків: "+withoutReceiptCount):
+        ("Знайдено операцій: "+matched),15,NAVY,true);
+    textInto(summary,historyWithoutReceipt?
+        ("Сума без чеків: "+money(withoutReceiptCents)+" ₴"):
+        ("Сума витрат: "+money(expensesCents)+" ₴"),20,historyWithoutReceipt?0xff916100:0xffb63f4c,true);
+    if(!historyWithoutReceipt)
+      textInto(summary,"Витрат: "+expensesCount+" · Без чеків: "+withoutReceiptCount+
+          " на "+money(withoutReceiptCents)+" ₴",12,MUTED,false);
+    textInto(summary,"За знайденими записами; сторнування враховані окремо.",11,MUTED,false);
+
+    if(matched==0){
+      LinearLayout empty=card(container);
+      textInto(empty,"Нічого не знайдено",16,NAVY,true);
+      textInto(empty,"Спробуйте іншу дату, суму чи частину назви витрати.",13,MUTED,false);
+      return;
+    }
+    if(matched>visible.size())
+      textInto(container,"Знайдено "+matched+" операцій. Показано перші "+
+          visible.size()+"; уточніть пошук.",12,MUTED,false);
+
+    for(JSONObject x:visible){
+      String kind=x.optString("kind");
+      int receiptCount=receiptCounts.getOrDefault(x.optString("id"),0);
       LinearLayout c=card(container);
       String title=kind.equals("IN")?"＋ Прихід":kind.equals("OUT")?"− Розхід":kind.equals("OPENING")?"Початковий залишок":"↶ Коригування";
       textInto(c,title+"  "+money(Math.abs(x.optLong("amount")))+" ₴",16,x.optLong("amount")<0?0xffb84d46:TEAL,true);
       textInto(c,displayDate(x.optString("date")),15,NAVY,true);
       textInto(c,x.optString("purpose"),13,MUTED,false);
-      if(kind.equals("OUT"))receiptTag(c,count,x.optString("no_receipt_reason"));
+      if(kind.equals("OUT"))receiptTag(c,receiptCount,x.optString("no_receipt_reason"));
       Long after=balances.get(x.optString("id"));
       if(after!=null)textInto(c,"Залишок після операції: "+money(after)+" ₴",13,TEAL,true);
       c.setOnClickListener(v->showDetail(x));
       TextView details=text("Переглянути деталі й коментарі ›",12,TEAL,true);
       c.addView(details);details.setOnClickListener(v->showDetail(x));
     }
-    if(total==0){
-      LinearLayout empty=card(container);
-      textInto(empty,"Нічого не знайдено",16,NAVY,true);
-      textInto(empty,"Спробуйте іншу дату, суму чи частину назви витрати.",13,MUTED,false);
-    }else{
-      textInto(container,total>200?"Знайдено "+total+" операцій. Показано перші 200; уточніть пошук.":"Знайдено операцій: "+total,12,MUTED,false);
-    }
   }
+
   private void showDetail(JSONObject item){
     if(item.optString("kind").equals("OUT"))
       settings.markThreadRead(settings.userId(),item.optString("id"),state.optJSONArray("comments"));
