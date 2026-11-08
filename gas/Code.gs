@@ -857,9 +857,9 @@ function payReimbursement_(user,data){
     if(r.status!=='APPROVED')throw new Error('Немає фінансового запису відшкодування: потрібна перевірка');
     var ledgerId=Utilities.getUuid();
     append_('Ledger',[ledgerId,today_(),now_(),'OUT',String(-Number(r.amount)),
-      r.requester_id,'','','','Борги / Відшкодування',
+      r.requester_id,nameForUser_(r.requester_id),'','Борги / Відшкодування',
       'Відшкодування '+r.purpose+' — '+nameForUser_(r.requester_id),
-      'Чек у заявці '+r.id,'',user.id,r.expense_target,r.id]);
+      '', '',user.id,r.expense_target,r.id]);
     found={id:ledgerId};
   }
   // Reuse the original Drive file in the public expense register. Never copy
