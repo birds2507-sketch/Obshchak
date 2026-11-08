@@ -43,6 +43,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -148,10 +149,12 @@ public class MainActivity extends ComponentActivity {
     textInto(title,"Облік спільної каси «Тупіка»",11,MUTED,false);
     title.setContentDescription("Повернутися на головну");
     title.setOnClickListener(v->go("home"));
-    TextView bell=text("♧",24,TEAL,true);bell.setGravity(Gravity.CENTER);
-    bar.addView(bell,new LinearLayout.LayoutParams(dp(43),-1));
-    bell.setText("♧");bell.setContentDescription("Події та сповіщення");
-    bell.setOnClickListener(v->go("activity"));
+    int unread=unreadCount();
+    TextView bell=text(unread>0?"✉ "+(unread>99?"99+":unread):"✉",unread>0?15:23,unread>0?0xffb45309:TEAL,true);
+    bell.setGravity(Gravity.CENTER);
+    bar.addView(bell,new LinearLayout.LayoutParams(dp(63),-1));
+    bell.setContentDescription(unread>0?("Непрочитані повідомлення: "+unread):"Запитання та відповіді");
+    bell.setOnClickListener(v->go("questions"));
   }
 
   private void bottomBar(LinearLayout root){
@@ -389,7 +392,7 @@ public class MainActivity extends ComponentActivity {
 
     LinearLayout shortcuts=row();screen.addView(shortcuts);
     quickTile(shortcuts,"▤","Чеки витрат",countReceipts()+" файлів",()->go("receipts"));
-    quickTile(shortcuts,"☏","Запитання",countComments()+" коментарів",()->go("questions"));
+    quickTile(shortcuts,"☏","Запитання",unreadCount()>0?("Нових: "+unreadCount()):"Усі прочитані",()->go("questions"));
     quickTile(shortcuts,"☁","Синхронізація",outbox.list(settings.userId(),false).size()+" у черзі",()->go("queue"));
     spacer(screen,6);
     textInto(screen,"Записи, не передані в Google, поки не входять до загального залишку.",12,MUTED,false);
@@ -490,8 +493,30 @@ public class MainActivity extends ComponentActivity {
     if(!yes&&reason!=null&&!reason.trim().isEmpty())textInto(box,"Причина: "+reason,11,0xff805900,false);
   }
 
+  private boolean isUnread(JSONObject c){
+    if(c==null||settings.userId().isEmpty())return false;
+    if(settings.userId().equals(c.optString("author_id")))return false;
+    String id=c.optString("id");
+    return !id.isEmpty() && !settings.readComments(settings.userId()).contains(id);
+  }
+  private int unreadCount(){
+    JSONArray comments=state.optJSONArray("comments");
+    if(comments==null||settings.userId().isEmpty()||!settings.unreadBaselineReady(settings.userId()))return 0;
+    Set<String> seen=settings.readComments(settings.userId());
+    int n=0;
+    for(int i=0;i<comments.length();i++){
+      JSONObject c=comments.optJSONObject(i);
+      if(c!=null&&!settings.userId().equals(c.optString("author_id")) &&
+         !c.optString("id").isEmpty() && !seen.contains(c.optString("id")))n++;
+    }
+    return n;
+  }
+
   private void drawQuestions(){
     textInto(screen,"Запитання до витрат",23,NAVY,true);
+    int unreadTotal=unreadCount();
+    if(unreadTotal>0)textInto(screen,"Непрочитаних: "+unreadTotal+" · Натисніть «Відкрити обговорення»",13,0xff986106,true);
+    else textInto(screen,"Немає нових повідомлень",13,TEAL,true);
     JSONArray comments=state.optJSONArray("comments"),ledger=state.optJSONArray("ledger");
     if(comments==null||comments.length()==0){textInto(screen,"Запитань і відповідей поки немає",14,MUTED,false);return;}
     for(int i=0;i<comments.length();i++){
@@ -503,7 +528,10 @@ public class MainActivity extends ComponentActivity {
       if(tx==null)continue;
       final JSONObject target=tx;
       LinearLayout box=card(screen);
+      boolean unread=isUnread(c);
+      if(unread)box.setBackground(background(0xfffff5dc,14));
       textInto(box,tx.optString("purpose")+" · "+money(Math.abs(tx.optLong("amount")))+" ₴",15,NAVY,true);
+      if(unread)textInto(box,"● Нове повідомлення",12,0xff986106,true);
       textInto(box,nameOf(c.optString("author_id"))+": "+c.optString("message"),13,MUTED,false);
       textInto(box,c.optString("created_at"),11,MUTED,false);
       button(box,"Відкрити обговорення",()->showDetail(target),false);
@@ -675,6 +703,8 @@ public class MainActivity extends ComponentActivity {
     }
   }
   private void showDetail(JSONObject item){
+    if(item.optString("kind").equals("OUT"))
+      settings.markThreadRead(settings.userId(),item.optString("id"),state.optJSONArray("comments"));
     LinearLayout layout=new LinearLayout(this);layout.setOrientation(LinearLayout.VERTICAL);layout.setPadding(dp(16),dp(10),dp(16),dp(8));
     textInto(layout,item.optString("purpose")+" · "+money(Math.abs(item.optLong("amount")))+" грн",18,NAVY,true);
     textInto(layout,"Дата: "+displayDate(item.optString("date")),15,NAVY,true);
@@ -719,6 +749,10 @@ public class MainActivity extends ComponentActivity {
       GradientDrawable commentBg=background(0xfff6fbfd,12);
       commentBg.setStroke(dp(2),TEAL);
       comment.setBackground(commentBg);
+      textInto(layout,"Швидкі фрази (натисніть, щоб вставити в поле):",12,MUTED,false);
+      LinearLayout answers=row();layout.addView(answers);
+      button(answers,"Для чого?",()->comment.setText("Поясніть, будь ласка, для чого ця витрата."),false);
+      button(answers,"Де чек?",()->comment.setText("Додайте, будь ласка, чек до цієї витрати."),false);
       button(layout,"➤ Надіслати",()->{
         String messageText=comment.getText().toString().trim();
         if(messageText.isEmpty()){comment.setError("Спочатку напишіть повідомлення");return;}
@@ -763,7 +797,10 @@ public class MainActivity extends ComponentActivity {
         statusHandler.postDelayed(this,1800);
       }
     };
-    dialog.setOnDismissListener(d->statusHandler.removeCallbacks(syncStatus));
+    dialog.setOnDismissListener(d->{
+      statusHandler.removeCallbacks(syncStatus);
+      if(page.equals("home")||page.equals("questions")||page.equals("history"))draw();
+    });
     dialog.show();
     statusHandler.postDelayed(syncStatus,900);
   }
@@ -914,12 +951,16 @@ public class MainActivity extends ComponentActivity {
   }
   private void refresh(){if(secure.token().isEmpty())return;
     remote("state",new JSONObject(),secure.token(),r->{
+      int priorUnread=unreadCount();
       JSONArray oldEvents=state.optJSONArray("events"),newEvents=r.optJSONArray("events");
       String before=oldEvents!=null&&oldEvents.length()>0?oldEvents.optJSONObject(0).optString("id"):"";
       String after=newEvents!=null&&newEvents.length()>0?newEvents.optJSONObject(0).optString("id"):"";
       String nextState=r.toString();
       boolean changed=!nextState.equals(state.toString());
       state=r;lastSuccessfulRefresh=android.os.SystemClock.elapsedRealtime();
+      settings.initializeReadComments(settings.userId(),state.optJSONArray("comments"));
+      int newUnread=unreadCount();
+      if(newUnread>priorUnread)message("Нові повідомлення: "+(newUnread-priorUnread)+". Натисніть ✉ угорі.");
       if(changed)getPreferences(MODE_PRIVATE).edit().putString("last_state",nextState).apply();
       if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
       JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
