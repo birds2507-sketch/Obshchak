@@ -1445,6 +1445,20 @@ function money_(c){var n=Number(c)/100;return n.toFixed(2).replace('.',',');}
 
 
 /** Запустити один раз, щоб створити початкову базу та касира. */
+/**
+ * Public Apps Script editor entry point. Names ending with "_" are private
+ * in Apps Script and are not listed in the Run-function dropdown.
+ * RUN MANUALLY ONLY after making sure all local test queues are settled.
+ */
+function resetObshchakForCleanStart() {
+  return resetObshchakForCleanStart_();
+}
+
+/** Editor-only recovery if the first admin code expired. Does not reset data. */
+function renewFirstAdminCode() {
+  return renewFirstAdminCode_();
+}
+
 function initializeObshchak() {
   setupOwner_();
 }
