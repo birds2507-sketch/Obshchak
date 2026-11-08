@@ -137,7 +137,8 @@ function debtsPage(){
           (${stamp(r.appeal_at)}): ${esc(r.appeal_reason)}</p>`:''}
         ${r.appeal_decision?`<p class="status ${r.appeal_decision==='UPHOLD_CASHIER'?'':'warn'}">
           Рішення адміністратора: ${r.appeal_decision==='UPHOLD_CASHIER'?
-            'Підтверджено виплату касиром (НЕ підтвердження Сергія)':'Апеляцію касира відхилено'}.
+            'Підтверджено виплату касиром (НЕ підтвердження отримувача)':
+            r.appeal_decision==='RECIPIENT_CONFIRMED'?'Отримувач згодом сам підтвердив гроші':'Апеляцію касира відхилено'}.
           ${esc(r.appeal_decision_reason)} · ${esc(nameOf(r.appeal_decided_by))}
           · ${stamp(r.appeal_decided_at)}</p>`:''}
         ${cashier()&&r.status==='PAYMENT_DISPUTED'&&r.paid_by===A.state.me.id&&!r.appeal_at?
