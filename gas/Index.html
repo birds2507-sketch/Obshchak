@@ -271,10 +271,55 @@ function reportsPage(){const d=new Date(),monthStart=[d.getFullYear(),String(d.g
 ${expenseStatsWeb(inRange,A.state.ledger)}</div>`;}
 function netOf(rows){let ids={};A.state.ledger.forEach(x=>ids[x.id]=x);let out={income:0,expense:0,balance:0};rows.forEach(x=>{let a=Number(x.amount),orig=x.kind==='REVERSAL'?ids[x.correction_of]:x;out.balance+=a;if(orig?.kind==='IN')out.income+=a;if(orig?.kind==='OUT')out.expense-=a;});return out;}
 function bootstrapForm(){return `<div class="card formwrap"><h2>Створити адміністратора</h2><p class="tiny">Тільки один раз. Касир залишиться касиром; адміністратор керуватиме людьми та паролями.</p><form id="bootstrap-admin"><div class="rowform"><div class="field"><label>Ім'я адміністратора</label><input class="input" name="name" required maxlength="80"></div><div class="field"><label>Логін</label><input class="input" name="login" pattern="[a-zA-Z0-9._-]{3,30}" required></div></div><div class="field"><label>Тимчасовий PIN (4 цифри, необов'язково)</label><input class="input" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="Порожньо — сильний випадковий пароль"></div><button class="btn primary" type="submit">Створити адміністратора</button></form></div>`;}
-function peoplePage(){let all=A.state.users;return `<div class="stack"><div class="headrow"><h1>Учасники</h1><span class="tag">${all.filter(x=>x.active).length}/10 активних</span></div>
-<div class="card"><h2>Список</h2>${all.map(u=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(u.name)}</strong><div class="tiny">${esc(u.login)} · ${esc(u.role==='CASHIER'?'Касир':['ADMIN','RESERVE'].includes(u.role)?'Адміністратор':'Учасник')} · ${u.active?'Активний':'Заблокований'}</div></div>${admin()&&u.id!==A.state.me.id&&!['ADMIN','RESERVE'].includes(u.role)?`<div class="right"><button class="btn sm" data-act="reset" data-id="${esc(u.id)}">Новий пароль</button>${u.role==='MEMBER'?`<button class="btn sm" data-act="toggle" data-id="${esc(u.id)}">${u.active?'Блокувати':'Відкрити'}</button>`:''}</div>`:''}</div>`).join('')}</div>
-${cashier()&&!hasAdministrator()?bootstrapForm():''}
-${admin()&&all.filter(x=>x.active).length<10?`<div class="card formwrap"><h2>Додати учасника</h2><p class="tiny" style="margin:9px 0 15px">Тільки адміністратор створює учасників (до 10 активних). Тимчасовий пароль змінюється при першому вході.</p><form id="invite"><div class="rowform"><div class="field"><label>Ім'я</label><input class="input" name="name" required maxlength="80"></div><div class="field"><label>Логін латиницею</label><input class="input" name="login" pattern="[a-zA-Z0-9._-]{3,30}" required placeholder="andrii"></div></div><div class="field"><label>Тимчасовий PIN (4 цифри, необов'язково)</label><input class="input" type="password" inputmode="numeric" name="pin" pattern="[0-9]{4}" maxlength="4" placeholder="Порожньо — випадковий пароль"></div><button class="btn primary" type="submit">Створити доступ</button></form></div>`:admin()?'<div class="status">Ліміт 10 активних учасників досягнуто.</div>':''}</div>`;}
+function peoplePage(){
+  const all=A.state.users;
+  const current=all.filter(u=>!u.deleted);
+  const archived=all.filter(u=>u.deleted);
+  const active=current.filter(u=>u.active).length;
+  const hasCashier=current.some(u=>u.active&&u.role==='CASHIER');
+  const roleText=u=>u.role==='CASHIER'?'Касир':(['ADMIN','RESERVE'].includes(u.role)?'Адміністратор':'Учасник');
+  let html='<div class="stack"><div class="headrow"><h1>Користувачі та права</h1><span class="tag">'+active+'/10 активних</span></div>';
+  html+='<div class="card"><p class="small">Адміністратор створює користувачів, змінює логіни та касира. Видалені учасники не мають доступу, але їхній PersonID/ID і попередні операції зберігаються для аудиту.</p></div>';
+  if(admin()&&!hasCashier)html+='<p class="status warn">Касира немає. Створіть першого касира або призначте його з учасників.</p>';
+  html+='<div class="card"><h2>Облікові записи</h2>';
+  for(const u of current){
+    html+='<div class="rowitem" style="cursor:default"><div><strong>'+esc(u.name)+'</strong><div class="tiny">'+
+      esc(u.login)+' · '+roleText(u)+' · '+(u.active?'Активний':'Заблокований')+'</div></div>';
+    if(admin()){
+      html+='<div class="right" style="display:flex;flex-wrap:wrap;gap:5px">';
+      html+='<button class="btn sm" data-act="change-login" data-id="'+esc(u.id)+'">Змінити логін</button>';
+      if(u.id!==A.state.me.id&&!['ADMIN','RESERVE'].includes(u.role)){
+        html+='<button class="btn sm" data-act="reset" data-id="'+esc(u.id)+'">Новий PIN / пароль</button>';
+        if(u.role==='MEMBER'){
+          if(u.active)html+='<button class="btn sm primary" data-act="assign-cashier" data-id="'+esc(u.id)+'">Призначити касиром</button>';
+          html+='<button class="btn sm" data-act="toggle" data-id="'+esc(u.id)+'">'+(u.active?'Заблокувати':'Відновити')+'</button>';
+          if(u.active)html+='<button class="btn sm danger" data-act="remove-user" data-id="'+esc(u.id)+'">Вилучити</button>';
+        }
+      }
+      html+='</div>';
+    }
+    html+='</div>';
+  }
+  html+='</div>';
+  if(admin()&&active<10){
+    html+='<div class="card formwrap"><h2>Створити користувача</h2><form id="invite">'+
+      '<div class="rowform"><div class="field"><label>Ім’я</label><input class="input" name="name" maxlength="80" required></div>'+
+      '<div class="field"><label>Логін</label><input class="input" name="login" pattern="[a-zA-Z0-9._-]{3,30}" required></div></div>'+
+      '<div class="field"><label>Роль</label><select class="select" name="role"><option value="MEMBER">Учасник</option>'+
+      (!hasCashier?'<option value="CASHIER">Касир</option>':'')+'</select></div>'+
+      '<div class="field"><label>Тимчасовий PIN (необов’язково, 4 цифри)</label>'+
+      '<input class="input" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="Порожньо — випадковий пароль"></div>'+
+      '<button class="btn primary" type="submit">Створити обліковий запис</button></form></div>';
+  }
+  if(admin()&&archived.length){
+    html+='<details class="card"><summary style="cursor:pointer">Архів вилучених ('+archived.length+')</summary>';
+    for(const u of archived)html+='<div class="rowitem">'+esc(u.name)+' · '+esc(u.login)+' · доступ закрито</div>';
+    html+='</details>';
+  }
+  if(cashier()&&!hasAdministrator())html+=bootstrapForm();
+  return html+'</div>';
+}
+
 function electionRules(e){
  let live=A.state.users.filter(u=>u.active).length;
  if(!e)return {total:live,required:Math.floor(live/2)+1,allowed:true};
@@ -433,6 +478,38 @@ else if(act==='secret-close'){A.secret=null;render();}
 else if(act==='copy-secret'){let s=A.secret;await navigator.clipboard.writeText('ОБЩАК\nЛогін: '+s.login+'\nТимчасовий пароль: '+s.password);toast('Скопійовано. Передавайте особисто.');}
 else if(act==='reset'){if(!confirm('Створити новий тимчасовий пароль? Старий перестане діяти.'))return;let r=await request('resetPassword',{id:button.dataset.id});A.secret=r;render();}
 else if(act==='toggle'){if(!confirm('Змінити стан доступу учасника?'))return;await handler('toggleUser',{id:button.dataset.id},'Доступ оновлено.');}
+else if(act==='change-login'){
+  const account=A.state.users.find(u=>u.id===button.dataset.id);
+  if(!account)throw new Error('Користувача не знайдено');
+  const login=prompt('Новий логін для '+account.name,account.login);
+  if(login===null)return;
+  if(!/^[a-zA-Z0-9._-]{3,30}$/.test(login))
+    throw new Error('Логін: 3–30 латинських символів, цифр та . _ -');
+  const result=await invoke('changeLogin',{id:account.id,login:login});
+  if(result.relogin){
+    A.token='';A.state=null;safeRemove('obshchak_token');
+    A.error='Логін адміністратора змінено. Увійдіть повторно.';
+    renderLogin();
+  }else{await load();toast('Логін змінено.');}
+}
+else if(act==='assign-cashier'){
+  const account=A.state.users.find(u=>u.id===button.dataset.id);
+  if(!account)return;
+  const reason=prompt('Причина призначення касиром '+account.name);
+  if(reason===null)return;
+  if(reason.trim().length<5)throw new Error('Потрібно вказати причину зміни касира');
+  if(!confirm('Призначити '+account.name+' касиром? Попередній касир втратить права. Передайте реальні кошти за актом.'))return;
+  await handler('assignCashier',{id:account.id,reason:reason.trim()},'Касира призначено. Попередній став учасником.');
+}
+else if(act==='remove-user'){
+  const account=A.state.users.find(u=>u.id===button.dataset.id);
+  if(!account)return;
+  const login=prompt('Щоб вилучити '+account.name+', введіть його логін: '+account.login);
+  if(login===null)return;
+  if(!confirm('Вилучити учасника? Його особистий доступ закриється, історія залишиться.'))return;
+  await handler('removeUser',{id:account.id,confirmLogin:login},'Учасника вилучено з активного складу.');
+}
+
 else if(act==='report-filter'){A.reportFrom=$('#r-from').value;A.reportTo=$('#r-to').value;if(A.reportFrom>A.reportTo)throw new Error('Початок періоду пізніше за кінець');render();}
 else if(act==='pdf'){let from=$('#r-from').value,to=$('#r-to').value;if(from>to)throw new Error('Неправильний період');toast('Формуємо PDF…');let r=await invoke('pdf',{from,to}),url=saveBlob(r),a=document.createElement('a');a.href=url;a.download=r.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);toast('PDF сформовано.');}
 else if(act==='support-election')await handler('supportElection',{id:button.dataset.id},'Ініціативу підтримано.');
