@@ -499,7 +499,7 @@ public class MainActivity extends ComponentActivity {
    */
   private void drawLocalEntries(LinearLayout parent){
     if(!isCashier()||settings.userId().isEmpty())return;
-    java.util.List<LocalStore.Entry> all=outbox.list(settings.userId(),true);
+    java.util.List<LocalStore.Entry> all=outbox.recentTransactions(settings.userId());
     if(all.isEmpty())return;
     Set<String> remoteIds=new HashSet<>();
     JSONArray remote=state.optJSONArray("ledger");
