@@ -799,60 +799,160 @@ public class MainActivity extends ComponentActivity {
   private boolean isCashier(){return settings.role().equals("CASHIER");}
   private void drawForm(){
     if(!isCashier()){message("Фінансові операції може додавати лише касир");go("home");return;}
-    fields.clear();JSONObject draft=settings.getDraft(formKind);
-    textInto(screen,formKind.equals("OUT")?"Нова витрата":"Новий прихід",23,NAVY,true);
-    textInto(screen,"Поля зберігаються автоматично. Фото не очистить форму.",13,TEAL,false);
-    spacer(screen,10);
-    field("date","Дата (РРРР-ММ-ДД)",draft.optString("date",today()));
-    field("amount","Сума, грн",draft.optString("amount",""));
-    if(formKind.equals("IN")){
-      field("personName","Хто вніс гроші",draft.optString("personName",""));
-      methodSpinner=new Spinner(this);ArrayAdapter<String> adapt=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Готівка","На картку"});
-      methodSpinner.setAdapter(adapt);methodSpinner.setSelection(draft.optString("method","CASH").equals("BANK")?1:0);
-      screen.addView(methodSpinner);
-      methodSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){saveDraft();}});
-    } else {
-      expenseCategoryField(draft.optString("category","Господарські потреби"));
-      field("noReceiptReason","Якщо немає чека — причина",draft.optString("noReceiptReason",""));
-      LinearLayout row=row();screen.addView(row);
-      button(row,"📷 Сфотографувати",()->takePhoto(""),false);
-      button(row,"📎 З галереї / PDF",()->pickPhoto(""),false);
-      filesLabel=text("",13,MUTED,false);screen.addView(filesLabel);showDraftFiles();
+    fields.clear();methodSpinner=null;filesLabel=null;receiptPreview=null;
+    JSONObject draft=settings.getDraft(formKind);
+    if(draft.optString("date").isEmpty()){
+      try{draft.put("date",today());settings.saveDraft(formKind,draft);}catch(Exception ignored){}
     }
-    field("purpose","Призначення",draft.optString("purpose",""));
+    boolean expense=formKind.equals("OUT");
+    textInto(screen,expense?"Нова витрата":"Новий прихід",23,NAVY,true);
+    textInto(screen,"Швидке введення · поля та фото зберігаються на телефоні",12,TEAL,false);
     spacer(screen,8);
-    button(screen,"✓ Зберегти на телефоні й синхронізувати",this::queueForm,true);
-    textInto(screen,"Якщо мережі немає, запис залишиться у черзі. Не видаляйте дані застосунку до завершення передачі.",12,MUTED,false);
+
+    field("amount","Сума, ₴",draft.optString("amount",""));
+    EditText amount=fields.get("amount");
+    amount.setTextSize(29);amount.setTypeface(null,Typeface.BOLD);
+    amount.setGravity(Gravity.CENTER);
+    amount.setMinHeight(dp(65));
+    amount.setBackground(background(expense?0xffe9f4ff:0xffe6f7e8,14));
+
+    if(expense){
+      String chosen=draft.optString("category");
+      if(chosen.isEmpty())chosen=ExpenseCategoryPicker.last(this);
+      expenseCategoryField(chosen);
+    }else{
+      textInto(screen,"Категорія: Внесок у спільну касу",14,TEAL,true);
+      field("personName","Від кого *",draft.optString("personName",""));
+    }
+
+    field("purpose",expense?"Призначення (опис) *":"Призначення (опис)",
+      draft.optString("purpose",expense?"":"Внесок у спільну касу"));
+    EditText purpose=fields.get("purpose");
+    if(purpose!=null){purpose.setMinHeight(dp(58));purpose.setHint("Коротко: на що витрачено кошти");}
+
+    drawMethodChoices(draft.optString("method","CASH"),
+      expense?"Спосіб оплати":"Спосіб отримання");
+
+    if(expense){
+      spacer(screen,5);
+      textInto(screen,"Чек / підтвердження",15,NAVY,true);
+      LinearLayout row=row();screen.addView(row);
+      button(row,"📷 Камера",()->takePhoto(""),false);
+      button(row,"▣ Галерея / PDF",()->pickPhoto(""),false);
+      filesLabel=text("",12,MUTED,false);screen.addView(filesLabel);
+      receiptPreview=new LinearLayout(this);receiptPreview.setOrientation(LinearLayout.VERTICAL);
+      screen.addView(receiptPreview);
+      showDraftFiles();
+
+      CheckBox missing=new CheckBox(this);
+      missing.setText("Немає чека — вказати причину");
+      missing.setTextSize(14);missing.setTextColor(NAVY);
+      missing.setChecked(!draft.optString("noReceiptReason","").trim().isEmpty());
+      screen.addView(missing,new LinearLayout.LayoutParams(-1,dp(48)));
+      LinearLayout reasons=new LinearLayout(this);reasons.setOrientation(LinearLayout.VERTICAL);
+      screen.addView(reasons,new LinearLayout.LayoutParams(-1,-2));
+      EditText reason=input(reasons,"Причина відсутності чека",
+        draft.optString("noReceiptReason",""),false);
+      fields.put("noReceiptReason",reason);
+      reason.addTextChangedListener(new TextWatcher(){
+        public void beforeTextChanged(CharSequence t,int a,int c,int z){}
+        public void onTextChanged(CharSequence t,int a,int b,int c){saveDraft();}
+        public void afterTextChanged(Editable t){}
+      });
+      reasons.setVisibility(missing.isChecked()?View.VISIBLE:View.GONE);
+      missing.setOnCheckedChangeListener((v,checked)->{
+        reasons.setVisibility(checked?View.VISIBLE:View.GONE);
+        if(!checked)reason.setText("");
+      });
+    }
+
+    textInto(screen,"Дата операції",13,MUTED,true);
+    TextView date=text("▦  "+displayDate(draft.optString("date",today()))+"  ▾",
+      17,NAVY,true);
+    date.setGravity(Gravity.CENTER_VERTICAL);
+    date.setBackground(background(Color.WHITE,12));
+    date.setPadding(dp(14),dp(10),dp(14),dp(10));
+    screen.addView(date,new LinearLayout.LayoutParams(-1,dp(52)));
+    date.setOnClickListener(v->{
+      saveDraft();
+      String current=settings.getDraft(formKind).optString("date",today());
+      LocalDate initial;
+      try{initial=LocalDate.parse(current);}catch(Exception e){initial=LocalDate.now();}
+      DatePickerDialog dialog=new DatePickerDialog(this,(picker,year,month,day)->{
+        String iso=String.format(Locale.US,"%04d-%02d-%02d",year,month+1,day);
+        JSONObject updated=settings.getDraft(formKind);
+        try{updated.put("date",iso);settings.saveDraft(formKind,updated);}catch(Exception ignored){}
+        date.setText("▦  "+displayDate(iso)+"  ▾");
+      },initial.getYear(),initial.getMonthValue()-1,initial.getDayOfMonth());
+      dialog.show();
+    });
+
+    spacer(screen,15);
+    button(screen,"✓ Зберегти операцію",()->queueForm(false),true);
+    button(screen,expense?"✓ Зберегти та ще одну витрату":"✓ Зберегти та ще один прихід",
+      ()->queueForm(true),false);
+    textInto(screen,"Операція одразу потрапляє в касу на телефоні. Google синхронізується у фоні.",
+      12,MUTED,false);
   }
+
+  private void drawMethodChoices(String initial,String title){
+    textInto(screen,title,13,MUTED,true);
+    LinearLayout area=row();screen.addView(area,new LinearLayout.LayoutParams(-1,dp(61)));
+    String[] selected={initial.equals("BANK")?"BANK":"CASH"};
+    TextView cash=text("▣ Готівка",14,NAVY,true);
+    TextView bank=text("▤ Картка",14,NAVY,true);
+    cash.setGravity(Gravity.CENTER);bank.setGravity(Gravity.CENTER);
+    LinearLayout.LayoutParams lp1=new LinearLayout.LayoutParams(0,dp(49),1f);
+    lp1.setMargins(0,0,dp(3),0);
+    LinearLayout.LayoutParams lp2=new LinearLayout.LayoutParams(0,dp(49),1f);
+    lp2.setMargins(dp(3),0,0,0);
+    area.addView(cash,lp1);area.addView(bank,lp2);
+    Runnable render=()->{
+      cash.setBackground(background(selected[0].equals("CASH")?0xffdff7e7:Color.WHITE,13));
+      bank.setBackground(background(selected[0].equals("BANK")?0xffdff7e7:Color.WHITE,13));
+      cash.setTextColor(selected[0].equals("CASH")?0xff007748:NAVY);
+      bank.setTextColor(selected[0].equals("BANK")?0xff007748:NAVY);
+    };
+    cash.setOnClickListener(v->{selected[0]="CASH";saveDraft();
+      JSONObject draft=settings.getDraft(formKind);
+      try{draft.put("method","CASH");settings.saveDraft(formKind,draft);}catch(Exception ignored){}
+      render.run();
+    });
+    bank.setOnClickListener(v->{selected[0]="BANK";saveDraft();
+      JSONObject draft=settings.getDraft(formKind);
+      try{draft.put("method","BANK");settings.saveDraft(formKind,draft);}catch(Exception ignored){}
+      render.run();
+    });
+    render.run();
+  }
+
   private void expenseCategoryField(String selected){
-    textInto(screen,"Категорія витрати",13,MUTED,true);
+    textInto(screen,"Категорія витрати *",13,MUTED,true);
+    LinearLayout row=row();screen.addView(row,new LinearLayout.LayoutParams(-1,dp(60)));
     AutoCompleteTextView category=new AutoCompleteTextView(this);
-    category.setSingleLine(true);
-    category.setTextSize(15);
-    category.setPadding(dp(12),dp(10),dp(12),dp(10));
-    category.setBackground(background(Color.WHITE,10));
-    category.setHint("Виберіть або введіть свою категорію");
-    category.setThreshold(0);
-    category.setDropDownHeight(dp(310));
-    ArrayAdapter<String> list=new ArrayAdapter<>(this,android.R.layout.simple_dropdown_item_1line,ExpenseCategories.OPTIONS);
-    category.setAdapter(list);
-    category.setText(selected,false);
-    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
-    screen.addView(category,lp);
+    category.setSingleLine(true);category.setTextSize(15);
+    category.setPadding(dp(12),dp(11),dp(11),dp(11));
+    category.setBackground(background(Color.WHITE,12));
+    category.setHint("Виберіть категорію");
+    category.setThreshold(1);category.setDropDownHeight(dp(280));
+    ArrayAdapter<String> list=new ArrayAdapter<>(this,
+      android.R.layout.simple_dropdown_item_1line,ExpenseCategories.OPTIONS);
+    category.setAdapter(list);category.setText(selected,false);
+    LinearLayout.LayoutParams catParams=new LinearLayout.LayoutParams(0,dp(51),1f);
+    catParams.rightMargin=dp(6);row.addView(category,catParams);
     fields.put("category",category);
     category.addTextChangedListener(new TextWatcher(){
       public void beforeTextChanged(CharSequence text,int start,int count,int after){}
       public void onTextChanged(CharSequence text,int start,int before,int count){saveDraft();}
       public void afterTextChanged(Editable text){}
     });
-    TextView open=text("▾ Переглянути категорії  ·  або введіть власну",13,TEAL,true);
-    open.setPadding(dp(6),dp(9),dp(6),dp(14));
-    screen.addView(open);
-    open.setOnClickListener(v->{
-      category.requestFocus();
-      category.showDropDown();
-    });
-    category.setOnClickListener(v->category.showDropDown());
+    TextView pick=text("☷  Обрати",13,Color.WHITE,true);
+    pick.setGravity(Gravity.CENTER);pick.setBackground(background(0xff087b64,12));
+    row.addView(pick,new LinearLayout.LayoutParams(dp(102),dp(51)));
+    pick.setOnClickListener(v->ExpenseCategoryPicker.show(this,
+      category.getText().toString(),name->category.setText(name,false)));
+    textInto(screen,"Пошук за назвою · Усі / Часті / Останні · власна категорія",
+      11,MUTED,false);
   }
 
   private void field(String key,String label,String value){
