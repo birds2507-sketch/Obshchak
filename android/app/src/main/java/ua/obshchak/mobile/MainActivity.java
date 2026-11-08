@@ -916,6 +916,35 @@ public class MainActivity extends ComponentActivity {
   }
 
   private boolean isCashier(){return settings.role().equals("CASHIER");}
+  private void chooseIncomeContributor(){
+    JSONArray users=state.optJSONArray("users");
+    ArrayList<String> names=new ArrayList<>(),ids=new ArrayList<>();
+    names.add("Інша особа (без кабінету)");ids.add("");
+    if(users!=null)for(int i=0;i<users.length();i++){
+      JSONObject u=users.optJSONObject(i);
+      if(u!=null&&u.optBoolean("active")&&!u.optBoolean("deleted")){
+        names.add(u.optString("name")+" · "+roleName(u.optString("role")));
+        ids.add(u.optString("id"));
+      }
+    }
+    new AlertDialog.Builder(this).setTitle("Хто саме вніс гроші?")
+      .setItems(names.toArray(new String[0]),(d,position)->{
+        saveDraft();
+        JSONObject draft=settings.getDraft("IN");
+        String id=ids.get(position);
+        String name=position==0?"":names.get(position).split(" · ",2)[0];
+        EditText inputName=fields.get("personName");
+        if(inputName!=null)inputName.setText(name);
+        try{
+          if(id.isEmpty())draft.remove("personId");
+          else draft.put("personId",id);
+          draft.put("personName",name);settings.saveDraft("IN",draft);
+        }catch(Exception ignored){}
+        message(id.isEmpty()?"Вкажіть ім’я вручну: внесок не буде прив’язаний до кабінету":
+          "✓ Внесок буде прив’язано до кабінету "+name);
+        if(id.isEmpty()&&inputName!=null)inputName.requestFocus();
+      }).show();
+  }
   private void drawForm(){
     if(!isCashier()){message("Фінансові операції може додавати лише касир");go("home");return;}
     fields.clear();filesLabel=null;receiptPreview=null;
@@ -943,6 +972,32 @@ public class MainActivity extends ComponentActivity {
     }else{
       textInto(screen,"Категорія: Внесок у спільну касу",14,TEAL,true);
       field("personName","Від кого *",draft.optString("personName",""));
+      EditText contributor=fields.get("personName");
+      contributor.setHint("Введіть ім’я або виберіть учасника");
+      contributor.addTextChangedListener(new TextWatcher(){
+        public void beforeTextChanged(CharSequence t,int a,int c,int z){}
+        public void onTextChanged(CharSequence t,int a,int b,int c){
+          JSONObject current=settings.getDraft("IN");
+          String savedId=current.optString("personId");
+          if(savedId.isEmpty())return;
+          JSONArray all=state.optJSONArray("users");
+          String selected="";
+          if(all!=null)for(int i=0;i<all.length();i++){
+            JSONObject u=all.optJSONObject(i);
+            if(u!=null&&savedId.equals(u.optString("id"))){selected=u.optString("name");break;}
+          }
+          if(!selected.equals(t.toString())){
+            current.remove("personId");settings.saveDraft("IN",current);
+          }
+        }
+        public void afterTextChanged(Editable t){}
+      });
+      String memberId=draft.optString("personId");
+      String label=memberId.isEmpty()?"Обрати учасника зі списку":
+        "✓ Учасник прив’язаний до облікового запису";
+      button(screen,"♙ "+label,()->chooseIncomeContributor(),false);
+      textInto(screen,"Для особистої історії внесків обов’язково оберіть зареєстрованого учасника зі списку. Простий текст без вибору не прив’язує внесок до кабінету.",
+        12,MUTED,false);
     }
 
     field("purpose",expense?"Призначення (опис) *":"Призначення (опис)",
@@ -1138,7 +1193,11 @@ public class MainActivity extends ComponentActivity {
       message("Оберіть напрям витрати: МП, ГМЕ 1 або ГМЕ 2");return;}
     try {
       JSONObject tx=new JSONObject();tx.put("kind",formKind);tx.put("date",d.getString("date"));tx.put("amount",amount.replace(',','.'));
-      tx.put("purpose",purpose);if(formKind.equals("IN")){tx.put("personName",d.optString("personName"));}
+      tx.put("purpose",purpose);if(formKind.equals("IN")){
+        tx.put("personName",d.optString("personName"));
+        String selectedId=d.optString("personId");
+        if(!selectedId.isEmpty())tx.put("personId",selectedId);
+      }
       else {tx.put("category",d.optString("category"));
         tx.put("expenseTarget",d.optString("expenseTarget"));
         tx.put("noReceiptReason",files.length()>0?"Чек збережений на телефоні; очікується синхронізація":d.optString("noReceiptReason"));}
@@ -1264,7 +1323,9 @@ public class MainActivity extends ComponentActivity {
   }catch(Exception ex){message("Не вдалося відкрити локальний чек: "+ex.getMessage());}}
 
   private void drawHistory(){
-    textInto(screen,"Операції",23,NAVY,true);
+    String header=historyKind.equals("IN")?"Доходи / внески":
+      historyKind.equals("OUT")?"Витрати":"Операції";
+    textInto(screen,header,23,NAVY,true);
     textInto(screen,"Локальні операції позначені ⟳ і доступні до завершення синхронізації.",
       12,MUTED,false);
     LinearLayout periods=row();screen.addView(periods);
@@ -1280,6 +1341,16 @@ public class MainActivity extends ComponentActivity {
       button(actions,"＋ Прихід",()->{formKind="IN";go("form");},true);
       button(actions,"− Витрата",()->{formKind="OUT";go("form");},true);
     }
+    LinearLayout kindButtons=row();screen.addView(kindButtons);
+    button(kindButtons,historyKind.equals("ALL")?"✓ Усі":"Усі",()->{
+      historyKind="ALL";historyWithoutReceipt=false;draw();
+    },historyKind.equals("ALL"));
+    button(kindButtons,historyKind.equals("IN")?"✓ Доходи":"Доходи",()->{
+      historyKind="IN";historyWithoutReceipt=false;draw();
+    },historyKind.equals("IN"));
+    button(kindButtons,historyKind.equals("OUT")?"✓ Витрати":"Витрати",()->{
+      historyKind="OUT";historyWithoutReceipt=false;draw();
+    },historyKind.equals("OUT"));
     spacer(screen,7);
     EditText search=input(screen,"Пошук","",false);
     search.setHint("Назва, 21.03.2026 або 150,00");
@@ -1287,7 +1358,8 @@ public class MainActivity extends ComponentActivity {
     LinearLayout filters=row();screen.addView(filters);
     LinearLayout results=new LinearLayout(this);results.setOrientation(LinearLayout.VERTICAL);
     button(filters,"Усі операції",()->{historyWithoutReceipt=false;renderFilteredHistory(results);},false);
-    button(filters,"⚠ Без чека",()->{historyWithoutReceipt=true;renderFilteredHistory(results);},false);
+    if(!historyKind.equals("IN"))
+      button(filters,"⚠ Без чека",()->{historyWithoutReceipt=true;renderFilteredHistory(results);},false);
     screen.addView(results,new LinearLayout.LayoutParams(-1,-2));
     search.addTextChangedListener(new TextWatcher(){
       public void beforeTextChanged(CharSequence value,int start,int count,int after){}
@@ -1315,10 +1387,12 @@ public class MainActivity extends ComponentActivity {
     }
     ArrayList<CashLedgerPreview.Row> visible=new ArrayList<>();
     int matched=0,expensesCount=0,withoutReceiptCount=0,localMatches=0;
-    long expensesCents=0L,withoutReceiptCents=0L;
+    long expensesCents=0L,incomeCents=0L,withoutReceiptCents=0L;
     for(CashLedgerPreview.Row row:preview.rows){
       if(historyForMonth&&!row.tx.optString("date").startsWith(selectedMonth))continue;
       String kind=row.kind();
+      if(historyKind.equals("IN")&&!kind.equals("IN"))continue;
+      if(historyKind.equals("OUT")&&!kind.equals("OUT"))continue;
       int receiptCount=row.isLocal()?row.localReceiptCount():
         receiptCounts.getOrDefault(row.id(),0);
       boolean missing=kind.equals("OUT")&&receiptCount==0&&!row.pendingReceipt;
@@ -1335,6 +1409,7 @@ public class MainActivity extends ComponentActivity {
       }
       matched++;
       if(row.isLocal())localMatches++;
+      if(kind.equals("IN"))incomeCents+=Math.abs(row.signedCents);
       if(kind.equals("OUT")){
         expensesCount++;expensesCents+=Math.abs(row.signedCents);
         if(missing){withoutReceiptCount++;withoutReceiptCents+=Math.abs(row.signedCents);}
@@ -1346,12 +1421,13 @@ public class MainActivity extends ComponentActivity {
     summary.setBackground(background(historyWithoutReceipt?0xfffff2cf:0xffe8f4f2,15));
     textInto(summary,historyWithoutReceipt?
       ("Витрат без чеків: "+withoutReceiptCount):
-      ("Знайдено операцій: "+matched),15,NAVY,true);
+      ("Знайдено "+(historyKind.equals("IN")?"внесків":historyKind.equals("OUT")?"витрат":"операцій")+": "+matched),15,NAVY,true);
     textInto(summary,historyWithoutReceipt?
       ("Сума без чеків: "+money(withoutReceiptCents)+" ₴"):
-      ("Сума витрат: "+money(expensesCents)+" ₴"),20,
-      historyWithoutReceipt?0xff916100:0xffb63f4c,true);
-    if(!historyWithoutReceipt)
+      (historyKind.equals("IN")?"Сума доходів: "+money(incomeCents)+" ₴":
+        "Сума витрат: "+money(expensesCents)+" ₴"),20,
+      historyWithoutReceipt?0xff916100:historyKind.equals("IN")?TEAL:0xffb63f4c,true);
+    if(!historyWithoutReceipt&&!historyKind.equals("IN"))
       textInto(summary,"Витрат: "+expensesCount+" · Без чеків: "+withoutReceiptCount+
         " на "+money(withoutReceiptCents)+" ₴",12,MUTED,false);
     if(historyForMonth)
