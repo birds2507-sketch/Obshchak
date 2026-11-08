@@ -11,7 +11,7 @@ var CFG_ = {
   MAX_TXN: 99999999999, // у копійках
   SESSION_SECONDS: 21600,
   HEADERS: {
-    Users: ['id','login','name','role','salt','hash','must_change','active','created_at','version'],
+    Users: ['id','login','name','role','salt','hash','must_change','active','created_at','version','deleted_at'],
     Ledger: ['id','date','created_at','kind','amount','person_id','person_name','method','category','purpose','no_receipt_reason','correction_of','created_by','expense_target','reimbursement_id'],
     Reimbursements: ['id','created_at','requester_id','amount','purpose','category','expense_target','receipt_id','status','approved_by','approved_at','paid_by','paid_at','ledger_id','confirmed_by','confirmed_at','rejected_by','rejected_at','rejection_reason','disputed_at','dispute_reason','appeal_by','appeal_at','appeal_reason','appeal_decision','appeal_decided_by','appeal_decided_at','appeal_decision_reason'],
     ReimbursementComments: ['id','claim_id','author_id','message','created_at'],
@@ -70,29 +70,108 @@ function doPost(e) {
 }
 
 /** Виконати один раз із редактора скриптів. НЕ публікувати без запуску цієї функції. */
-function setupOwner_() {
-  var props = PropertiesService.getScriptProperties();
-  if (props.getProperty('SHEET_ID')) throw new Error('ОБЩАК уже ініціалізовано. Повторний запуск заборонений.');
-  var ss = SpreadsheetApp.create('ОБЩАК — база даних');
-  var sheets = Object.keys(CFG_.HEADERS);
-  sheets.forEach(function(name, i) {
-    var sh = i === 0 ? ss.getSheets()[0] : ss.insertSheet(name);
+/** An empty database always starts with an administrator, NOT an automatic cashier.
+ * Owner-only functions below are executed in the Apps Script editor, never via api().
+ * A previous database and receipt folder remain intact as an offline archive.
+ */
+function createEmptyObshchakDb_(){
+  var book=SpreadsheetApp.create('ОБЩАК — чиста база '+now_());
+  Object.keys(CFG_.HEADERS).forEach(function(name,index){
+    var sh=index===0?book.getSheets()[0]:book.insertSheet(name);
     sh.setName(name);
-    sh.appendRow(CFG_.HEADERS[name]);
+    var head=CFG_.HEADERS[name];
+    sh.appendRow(head);
     sh.setFrozenRows(1);
-    sh.getRange(1, 1, 1, CFG_.HEADERS[name].length).setFontWeight('bold').setBackground('#e2e8f0');
-    sh.getRange(2, 1, Math.max(1, sh.getMaxRows()-1), CFG_.HEADERS[name].length).setNumberFormat('@');
+    sh.getRange(1,1,1,head.length).setFontWeight('bold').setBackground('#e2e8f0');
+    sh.getRange(2,1,Math.max(1,sh.getMaxRows()-1),head.length).setNumberFormat('@');
   });
-  var folder = DriveApp.createFolder('ОБЩАК — приватні чеки');
-  props.setProperties({ SHEET_ID: ss.getId(), RECEIPT_FOLDER_ID: folder.getId(), PEPPER: Utilities.getUuid() + Utilities.getUuid() });
-  var passwd = tempPassword_();
-  var salt = Utilities.getUuid();
-  append_('Users', [Utilities.getUuid(), 'kasyr', 'Касир', 'CASHIER', salt, hashPassword_(passwd,salt), '1', '1', now_(), '1']);
-  logAudit_('SYSTEM','SETUP','Створено базу, папку чеків та першого касира');
-  Logger.log('ОБЩАК: база %s', ss.getUrl());
-  Logger.log('ОБЩАК: логін = kasyr');
-  Logger.log('ОБЩАК: тимчасовий пароль = %s', passwd);
-  Logger.log('Збережіть пароль. При першому вході його треба змінити. Не передавайте доступ до таблиці учасникам.');
+  var receiptFolder=DriveApp.createFolder('ОБЩАК — чеки від '+now_());
+  return {book:book,folder:receiptFolder};
+}
+function issueFirstAdminCode_(props){
+  // Do not store plaintext registration code. Only the owner sees the code
+  // in the Apps Script editor's execution log; registration is one-time.
+  var secret=Utilities.getUuid().replace(/-/g,'')+Utilities.getUuid().replace(/-/g,'');
+  props.setProperty('FIRST_ADMIN_CODE_HASH',digest_(secret+'|'+props.getProperty('PEPPER')));
+  props.setProperty('FIRST_ADMIN_CODE_UNTIL',String(Date.now()+7*24*60*60*1000));
+  Logger.log('ОБЩАК: КОД ПЕРШОГО АДМІНІСТРАТОРА (діє 7 днів): %s',secret);
+  Logger.log('Зареєструйте адміністратора у застосунку/вебверсії. НІКОМУ не передавайте код.');
+  return secret;
+}
+/** Execute ONCE when creating a brand-new script deployment. */
+function setupOwner_(){
+  var props=PropertiesService.getScriptProperties();
+  if(props.getProperty('SHEET_ID'))throw new Error('Базу вже налаштовано. Для тестового перезапуску використайте resetObshchakForCleanStart_().');
+  var fresh=createEmptyObshchakDb_();
+  props.setProperties({SHEET_ID:fresh.book.getId(),RECEIPT_FOLDER_ID:fresh.folder.getId(),
+    PEPPER:Utilities.getUuid()+Utilities.getUuid(),DB_GENERATION:Utilities.getUuid()});
+  Logger.log('НОВА ЧИСТА БАЗА: %s',fresh.book.getUrl());
+  issueFirstAdminCode_(props);
+}
+/**
+ * Explicit OWNER action from the Apps Script editor ONLY.
+ * This creates a new live database, preserves the old one and old receipts
+ * as an archive in Drive, and issues a one-time first administrator code.
+ * Running it a second time will archive the currently live database again.
+ * Do not invoke with unsynced entries on participants' phones.
+ */
+function resetObshchakForCleanStart_(){
+  return withLock_(function(){
+    var props=PropertiesService.getScriptProperties();
+    var oldId=props.getProperty('SHEET_ID');
+    if(!oldId)throw new Error('Бази ще немає. Запустіть setupOwner_().');
+    var old=SpreadsheetApp.openById(oldId);
+    var oldFolder=props.getProperty('RECEIPT_FOLDER_ID');
+    // Create all new resources BEFORE switching any live pointer.
+    var next=createEmptyObshchakDb_();
+    var newPepper=Utilities.getUuid()+Utilities.getUuid();
+    props.setProperties({
+      SHEET_ID:next.book.getId(),RECEIPT_FOLDER_ID:next.folder.getId(),
+      PEPPER:newPepper,DB_GENERATION:Utilities.getUuid()
+    });
+    issueFirstAdminCode_(props);
+    Logger.log('НОВА БАЗА ОБЩАК: %s',next.book.getUrl());
+    Logger.log('АРХІВ ПОПЕРЕДНЬОЇ БАЗИ (НЕ ВИДАЛЕНО): %s',old.getUrl());
+    Logger.log('ID АРХІВУ ЧЕКІВ (НЕ ВИДАЛЕНО): %s',oldFolder);
+    Logger.log('Після цього очистіть локальні дані на телефонах тестувальників, щоб старі черги не заважали.');
+    return {ok:true,newDatabaseUrl:next.book.getUrl(),oldArchiveUrl:old.getUrl()};
+  });
+}
+/** Reissue the code if seven days elapsed; permitted only from the editor. */
+function renewFirstAdminCode_(){
+  return withLock_(function(){
+    var props=PropertiesService.getScriptProperties();
+    if(!props.getProperty('SHEET_ID'))throw new Error('Спочатку створіть базу');
+    if(all_('Users').length)throw new Error('Перший адміністратор уже зареєстрований');
+    issueFirstAdminCode_(props);
+  });
+}
+function firstAdminRegistrationState_(){
+  var props=PropertiesService.getScriptProperties();
+  if(!props.getProperty('SHEET_ID'))return {needsSetup:true,needsAdmin:false};
+  return {needsSetup:false,needsAdmin:all_('Users').length===0};
+}
+function registerFirstAdmin_(data){
+  var props=PropertiesService.getScriptProperties();
+  if(!props.getProperty('SHEET_ID')||all_('Users').length)
+    throw new Error('Перша реєстрація вже завершена або база не створена');
+  var code=String(data.code||'').trim();
+  var known=props.getProperty('FIRST_ADMIN_CODE_HASH');
+  var expires=Number(props.getProperty('FIRST_ADMIN_CODE_UNTIL')||0);
+  if(!known||!code||Date.now()>expires||code.length!==64||
+     digest_(code+'|'+props.getProperty('PEPPER'))!==known)
+    throw new Error('Невірний або прострочений код першого адміністратора');
+  var name=needed_(data.name,'Ім’я адміністратора',80);
+  var login=checkNewLogin_([],data);
+  var password=validPersonalPassword_(data.password);
+  var salt=Utilities.getUuid(),id=Utilities.getUuid();
+  append_('Users',[id,login,name,'ADMIN',salt,hashPassword_(password,salt),
+    '0','1',now_(),'1','']);
+  props.deleteProperty('FIRST_ADMIN_CODE_HASH');
+  props.deleteProperty('FIRST_ADMIN_CODE_UNTIL');
+  logAudit_(id,'FIRST_ADMIN','Зареєстровано першого адміністратора '+login);
+  event_('USER','Створено першого адміністратора '+name,id,id);
+  return {ok:true,login:login};
 }
 
 /** Аварійне відновлення касира тільки власником у редакторі Apps Script. */
@@ -108,6 +187,8 @@ function recoverCashier_() {
 
 function api(action, data, token) {
   data = data || {};
+  if (action === 'registrationState') return firstAdminRegistrationState_();
+  if (action === 'registerFirstAdmin') return withLock_(function(){return registerFirstAdmin_(data);});
   if (action === 'login') return login_(data);
   var user = auth_(token);
   if (action === 'logout') { CacheService.getScriptCache().remove('S_'+digest_(String(token))); return {ok:true}; }
@@ -138,6 +219,9 @@ function api(action, data, token) {
     case 'resetPassword': return withLock_(function(){return resetPassword_(user,data);});
     case 'toggleUser': return withLock_(function(){return toggleUser_(user,data);});
     case 'setReserve': return withLock_(function(){return setReserve_(user,data);});
+    case 'changeLogin': return withLock_(function(){return changeLogin_(user,data);});
+    case 'assignCashier': return withLock_(function(){return assignCashier_(user,data);});
+    case 'removeUser': return withLock_(function(){return removeUser_(user,data);});
     case 'proposeElection': return withLock_(function(){return proposeElection_(user,data);});
     case 'supportElection': return withLock_(function(){return supportElection_(user,data);});
     case 'castVote': return withLock_(function(){return castVote_(user,data);});
@@ -220,6 +304,10 @@ function ensureReimbursementLedgerColumn_(){
   sh.getRange(1,15).setFontWeight('bold').setBackground('#e2e8f0');
 }
 function append_(name, values) {
+  if(name==='Users'){
+    ensureUserArchiveColumn_();
+    if(values.length===10)values=values.concat(['']);
+  }
   if(name==='Ledger'){
     ensureReimbursementLedgerColumn_();
     if(values.length===13)values=values.concat(['','']);
@@ -231,7 +319,18 @@ function append_(name, values) {
     return s.charAt(0)==='=' ? "'"+s : s;
   }));
 }
+function ensureUserArchiveColumn_(){
+  var sh=sheet_('Users');
+  var head=sh.getRange(1,1,1,Math.max(10,sh.getLastColumn())).getDisplayValues()[0];
+  if(head[10]==='deleted_at')return;
+  if(head.indexOf('deleted_at')>=0)
+    throw new Error('Архівна колонка Users не на позиції 11');
+  sh.insertColumnAfter(10);
+  sh.getRange(1,11).setValue('deleted_at');
+  sh.getRange(1,11).setFontWeight('bold').setBackground('#e2e8f0');
+}
 function updateUser_(id, patch) {
+  ensureUserArchiveColumn_();
   var sh=sheet_('Users'), all=sh.getDataRange().getDisplayValues(), head=all[0], row=-1;
   for(var i=1;i<all.length;i++){if(all[i][0]===id){row=i+1;break;}}
   if(row<0) throw new Error('Користувача не знайдено');
@@ -331,7 +430,7 @@ function changePassword_(user,data) {
 }
 function requireRole_(user,roles){if(roles.indexOf(user.role)<0)throw new Error('Недостатньо прав для цієї дії');}
 function withLock_(callback){var lock=LockService.getScriptLock();lock.waitLock(25000);try{return callback();}finally{lock.releaseLock();}}
-function publicUser_(u){return {id:u.id,login:u.login,name:u.name,role:u.role,active:u.active==='1'};}
+function publicUser_(u){return {id:u.id,login:u.login,name:u.name,role:u.role,active:u.active==='1',deleted:!!u.deleted_at};}
 function logAudit_(by,action,details){append_('Audit',[Utilities.getUuid(),now_(),by,action,text_(details,1000)]);}
 /** Push device tokens are credentials to receive alerts, never account authentication. */
 function pushSheet_(){
@@ -1080,12 +1179,17 @@ function invite_(user,data){
   if(users.filter(function(u){return u.active==='1';}).length>=CFG_.MAX_USERS)
     throw new Error('Дозволено максимум 10 активних учасників');
   var login=checkNewLogin_(users,data),name=needed_(data.name,'Ім’я учасника',80);
+  var desired=String(data.role||'MEMBER');
+  if(['MEMBER','CASHIER'].indexOf(desired)<0)throw new Error('Невірна роль');
+  if(desired==='CASHIER'&&users.some(function(u){return u.active==='1'&&u.role==='CASHIER';}))
+    throw new Error('Касир уже призначений. Щоб змінити касира, використайте «Призначити касиром».');
   var pwd=startingPassword_(data),salt=Utilities.getUuid(),uid=Utilities.getUuid();
-  append_('Users',[uid,login,name,'MEMBER',salt,hashPassword_(pwd,salt),'1','1',now_(),'1']);
-  logAudit_(user.id,'INVITE','Створено учасника '+name+' ('+login+')');
-  event_('USER','Додано учасника '+name,user.id,uid);
-  return {ok:true,login:login,password:pwd};
+  append_('Users',[uid,login,name,desired,salt,hashPassword_(pwd,salt),'1','1',now_(),'1','']);
+  logAudit_(user.id,'INVITE','Створено '+desired+' '+name+' ('+login+')');
+  event_('USER',(desired==='CASHIER'?'Призначено першого касира ':'Додано учасника ')+name,user.id,uid);
+  return {ok:true,login:login,password:pwd,role:desired};
 }
+
 function resetPassword_(user,data){
   assertAdmin_(user);
   var other=findUser_(data.id);
@@ -1104,7 +1208,7 @@ function resetPassword_(user,data){
 function toggleUser_(user,data){
   assertAdmin_(user);
   var other=findUser_(data.id);
-  if(!other||other.role==='CASHIER'||other.role==='ADMIN'||
+  if(!other||other.deleted_at||other.role==='CASHIER'||other.role==='ADMIN'||
      other.role==='RESERVE'||other.id===user.id)
     throw new Error('Неможливо змінити доступ касира або адміністратора');
   var newActive=other.active==='1'?'0':'1';
@@ -1118,6 +1222,83 @@ function toggleUser_(user,data){
   updateUser_(other.id,{active:newActive,version:String(Number(other.version)+1)});
   logAudit_(user.id,'ACCESS',(newActive==='1'?'Увімкнено ':'Заблоковано ')+other.login);
   return {ok:true};
+}
+/** Dedicated admin controls. Person/user IDs remain immutable for audit. */
+function changeLogin_(admin,data){
+  assertAdmin_(admin);
+  var other=findUser_(data.id);
+  if(!other||other.active!=='1'||other.deleted_at)
+    throw new Error('Активного користувача не знайдено');
+  var newLogin=text_(data.login,40).toLowerCase();
+  if(!/^[a-z0-9._-]{3,30}$/.test(newLogin))
+    throw new Error('Логін має містити 3–30 латинських символів, цифр або . _ -');
+  if(other.login===newLogin)return {ok:true,login:newLogin,alreadyExists:true};
+  if(all_('Users').some(function(u){return u.login===newLogin;}))
+    throw new Error('Такий логін уже існує або збережений в архіві');
+  var oldLogin=other.login;
+  updateUser_(other.id,{login:newLogin,version:String(Number(other.version||1)+1)});
+  logAudit_(admin.id,'LOGIN_CHANGE','Змінено логін '+oldLogin+' → '+newLogin+
+    ' для '+other.id);
+  event_('USER','Адміністратор змінив логін '+other.name,admin.id,other.id);
+  return {ok:true,login:newLogin,relogin:other.id===admin.id};
+}
+function assignCashier_(admin,data){
+  assertAdmin_(admin);
+  var selected=findUser_(data.id);
+  if(!selected||selected.active!=='1'||selected.deleted_at||selected.role!=='MEMBER')
+    throw new Error('Оберіть активного учасника на посаду касира');
+  if(activeElection_())throw new Error('Спочатку завершіть поточні вибори касира');
+  var why=needed_(data.reason,'Причина зміни касира',300);
+  if(why.length<5)throw new Error('Поясніть причину зміни');
+  var previous=all_('Users').filter(function(u){
+    return u.role==='CASHIER'&&u.active==='1';
+  })[0];
+  if(previous){
+    updateUser_(previous.id,{role:'MEMBER',version:String(Number(previous.version||1)+1)});
+  }
+  updateUser_(selected.id,{role:'CASHIER',version:String(Number(selected.version||1)+1)});
+  var balance=calc_(all_('Ledger')).balance;
+  logAudit_(admin.id,'ADMIN_ASSIGN_CASHIER','Призначено '+selected.id+
+    ', попередній '+(previous?previous.id:'відсутній')+
+    ', залишок '+balance+' коп.; причина: '+why);
+  event_('USER','Адміністратор призначив касира '+selected.name+
+    '. Фактичні кошти передаються окремим актом.',admin.id,selected.id);
+  return {ok:true,cashier:selected.id,previous:previous?previous.id:'',
+    bookBalance:balance};
+}
+function removeUser_(admin,data){
+  assertAdmin_(admin);
+  var other=findUser_(data.id);
+  if(!other||other.deleted_at||other.active!=='1')
+    throw new Error('Учасника вже вилучено або його доступ заблокований');
+  if(other.id===admin.id||other.role==='ADMIN'||other.role==='RESERVE')
+    throw new Error('Адміністратора не можна видалити: передайте роль окремо');
+  if(other.role==='CASHIER')
+    throw new Error('Спочатку призначте іншого касира, потім видаліть колишнього');
+  if(other.role!=='MEMBER')throw new Error('Можна вилучити лише звичайного учасника');
+  if(String(data.confirmLogin||'')!==other.login)
+    throw new Error('Введіть точний логін учасника для підтвердження вилучення');
+  var election=activeElection_();
+  if(election)throw new Error('Не вилучайте учасників під час незавершених виборів');
+  var liveDebts=reimbursements_().some(function(r){
+    return r.requester_id===other.id&&
+      ['REQUESTED','APPROVED','PAID_PENDING_CONFIRMATION',
+       'PAYMENT_DISPUTED','APPEALED'].indexOf(r.status)>=0;
+  });
+  if(liveDebts)throw new Error('Є незакриті заявки/борги цього учасника');
+  var liveReversals=reversalRequests_().some(function(r){
+    if(['PENDING','DISPUTED'].indexOf(r.status)<0)return false;
+    return all_('Ledger').some(function(l){return l.id===r.original_id&&l.person_id===other.id;});
+  });
+  if(liveReversals)throw new Error('Є незакриті сторнування внесків учасника');
+  // Soft deletion: preserve immutable user ID and name for receipts, transactions,
+  // reimbursement confirmations and audit. Login stays reserved and cannot be recycled.
+  updateUser_(other.id,{active:'0',deleted_at:now_(),
+    version:String(Number(other.version||1)+1)});
+  logAudit_(admin.id,'USER_ARCHIVE','Адміністратор вилучив '+other.login+
+    '; архівну ідентичність збережено');
+  event_('USER','Учасника '+other.name+' вилучено з активного складу',admin.id,other.id);
+  return {ok:true,deleted:true};
 }
 function setReserve_(user,data){
   assertAdmin_(user);
