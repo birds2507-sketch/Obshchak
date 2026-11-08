@@ -38,8 +38,8 @@ function mobileBtn(id,label,icon){return `<button type="button" class="${A.page=
 function render(){if(!A.state){renderLogin();return;}
 let me=A.state.me, items=[['home','Головна','⌂'],['ledger','Операції','⇄'],['reports','Звіти','▤'],['people','Люди','♟'],['votes','Вибори','✓']];
 $('#root').innerHTML=`<div class="layout"><header class="top"><div class="logo"><span class="logo-icon">₴</span>ОБЩАК</div><div class="userchip"><span class="badge-dot"></span><span>${esc(me.name)} <span class="tiny">${esc(me.role==='CASHIER'?'касир':['ADMIN','RESERVE'].includes(me.role)?'адміністратор':'учасник')}</span></span><button class="btn sm outline" data-act="logout">Вийти</button></div></header>
-<nav class="nav">${items.map(x=>navBtn(...x)).join('')}${navBtn('activity','Активність','◷')}</nav>
-<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='votes'?votesPage():activityPage()}</main>
+<nav class="nav">${items.map(x=>navBtn(...x)).join('')}${navBtn('reversals','Сторнування','↶')}${navBtn('activity','Активність','◷')}</nav>
+<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='votes'?votesPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
 <div class="tiny" style="text-align:center;margin-top:24px">Дані Google Таблиці · Онлайн-облік, не банківський баланс · <button class="btn sm" data-act="refresh">Оновити</button> <button class="btn sm" data-act="password">Змінити пароль</button></div></div>
 <nav class="bottom-nav">${items.map(x=>mobileBtn(...x)).join('')}</nav>
 ${A.selected?detailModal():''}${A.preview?previewModal():''}${A.secret?secretModal():''}`;
@@ -73,19 +73,62 @@ ${A.kind==='IN'?`<div class="rowform"><div class="field"><label>Від кого 
 <div class="field"><label>Призначення / на що гроші</label><textarea class="textarea" name="purpose" required maxlength="300" placeholder="Наприклад, продукти для спільних потреб"></textarea></div>
 <button class="btn primary full" type="submit">Зберегти ${A.kind==='IN'?'прихід':'витрату'}</button></form>
 <p class="tiny">Після збереження операцію неможливо змінити або видалити. Помилки виправляються лише сторнуванням.</p></div>`;}
+function reversalStatus(status){
+  return status==='PENDING'?'Очікує адміністратора':status==='DISPUTED'?'Оскаржено учасником':
+    status==='APPROVED'?'Схвалено адміністратором':'Відхилено';
+}
+function reversalFor(original){
+  return (A.state.reversalRequests||[]).find(r=>r.original_id===original&&
+    ['PENDING','DISPUTED','APPROVED'].includes(r.status));
+}
+function reversalsPage(){
+  const list=A.state.reversalRequests||[];
+  const waiting=list.filter(r=>r.status==='PENDING'||r.status==='DISPUTED').length;
+  let html='<div class="stack"><div class="headrow"><h1>Контроль сторнувань</h1><span class="tag">'+
+    waiting+' на розгляді</span></div><div class="card"><p class="small">Касир подає заявку; лише адміністратор схвалює її. До схвалення баланс не змінюється. Учасники можуть оскаржити заявку.</p></div>';
+  if(!list.length)html+='<div class="card">Заявок немає.</div>';
+  for(const r of list){
+    const orig=A.state.ledger.find(x=>x.id===r.original_id);
+    const pending=r.status==='PENDING',disputed=r.status==='DISPUTED';
+    html+='<div class="card"><div class="headrow"><strong>↶ '+
+      (orig?esc(orig.purpose):esc(r.original_id.slice(0,8)))+'</strong><span class="tag">'+
+      esc(reversalStatus(r.status))+'</span></div>';
+    if(orig)html+='<div class="small">'+esc(orig.person_name||'')+' · '+signed(orig.amount)+
+      ' · Дата: '+formatDate(orig.date)+' · Внесено: '+stamp(orig.created_at)+'</div>';
+    html+='<p class="small">Причина: '+esc(r.reason)+'</p><p class="tiny">Подав: '+
+      esc(nameOf(r.requested_by))+' · '+stamp(r.created_at)+'</p>';
+    if(r.objection)html+='<p class="status warn">Заперечення від '+
+      esc(nameOf(r.objected_by))+': '+esc(r.objection)+'</p>';
+    if(r.acknowledged_by)html+='<p class="status">Внескодавець ознайомився: '+
+      esc(nameOf(r.acknowledged_by))+'</p>';
+    if(r.decided_by)html+='<p class="tiny">Рішення: '+esc(nameOf(r.decided_by))+' · '+
+      stamp(r.decided_at)+'</p>';
+    if(pending&&orig&&orig.kind==='IN'&&orig.person_id&&orig.person_id===A.state.me.id)
+      html+='<button class="btn sm" data-act="reversal-ack" data-id="'+esc(r.id)+'">Ознайомився зі сторнуванням мого внеску</button>';
+    if(pending&&r.requested_by!==A.state.me.id)
+      html+='<button class="btn sm" data-act="reversal-dispute" data-id="'+esc(r.id)+'">⚠ Заперечити</button>';
+    if(admin()&&(pending||disputed)){
+      html+='<button class="btn sm danger" data-act="reversal-reject" data-id="'+esc(r.id)+'">Відхилити</button>';
+      if(pending)html+='<button class="btn sm primary" data-act="reversal-approve" data-id="'+esc(r.id)+'">✓ Схвалити сторнування</button>';
+    }
+    html+='</div>';
+  }
+  return html+'</div>';
+}
 function detailModal(){const x=A.state.ledger.find(t=>t.id===A.selected);if(!x)return'';
-let receipts=A.state.receipts.filter(r=>r.ledger_id===x.id), comments=A.state.comments.filter(c=>c.ledger_id===x.id), rev=reversedIds().has(x.id);
+let receipts=A.state.receipts.filter(r=>r.ledger_id===x.id), comments=A.state.comments.filter(c=>c.ledger_id===x.id), rev=reversedIds().has(x.id), req=reversalFor(x.id);
 return `<div class="modalback" data-act="close-detail"><article class="modal" data-stop="true"><div class="headrow"><h2>${esc(kindName(x.kind))} · ${formatDate(x.date)}</h2><button class="btn sm" data-act="close-detail">Закрити ×</button></div>
 <div class="bigmoney ${Number(x.amount)>=0?'positive':'negative'}" style="font-size:32px">${signed(x.amount)}</div>
 <p><b>${esc(x.purpose)}</b></p><p class="tiny" style="margin-top:8px">Створено ${stamp(x.created_at)} · ${esc(nameOf(x.created_by))}</p>
 ${x.person_name?`<p class="small" style="margin-top:10px">Від кого: <b>${esc(x.person_name)}</b></p>`:''}${x.kind==='OUT'?`<p class="small">Напрям: <b>${esc(x.expense_target||'Без напряму')}</b></p>`:''}${x.category?`<p class="small">Категорія: ${esc(x.category)}</p>`:''}
 ${rev?`<p class="status warn" style="margin-top:12px">Цю первинну операцію сторновано. Запис збережено в історії.</p>`:''}
+${req?`<p class="status warn" style="margin-top:12px">Заявка на сторнування: ${esc(reversalStatus(req.status))}. ${esc(req.reason)}</p>`:''}
 ${x.kind==='REVERSAL'?`<p class="status warn" style="margin-top:12px">Сторно первинної операції № ${esc(x.correction_of.slice(0,8))}; не є фактичним рухом грошей.</p>`:''}
 ${x.kind==='OUT'?`<div class="divider"></div><h3>Чеки</h3>${receipts.length?receipts.map(r=>`<button class="btn outline sm" style="margin:7px 7px 0 0" data-act="receipt" data-id="${esc(r.id)}">📎 ${esc(r.filename)}</button>`).join(''):`<p class="status warn" style="margin:10px 0">Немає чека: ${esc(x.no_receipt_reason||'пояснення не вказано')}</p>`}
 ${cashier()?`<form id="add-receipt" style="margin-top:12px"><input type="hidden" name="ledgerId" value="${esc(x.id)}"><label>Додати чек пізніше</label><input class="input" type="file" name="file" accept="image/jpeg,image/png,image/webp,application/pdf" required><button class="btn sm secondary" style="margin-top:8px" type="submit">Прикріпити</button></form>`:''}
 <div class="divider"></div><h3>Публічні запитання й відповіді (${comments.length})</h3>${comments.length?comments.map(c=>`<div class="comment ${A.state.users.find(u=>u.id===c.author_id)?.role==='CASHIER'?'cashier':''}"><div class="headrow"><b class="small">${esc(nameOf(c.author_id))}</b><span class="tiny">${stamp(c.created_at)}</span></div><p class="small clamp" style="margin-top:7px;white-space:pre-wrap">${esc(c.message)}</p></div>`).join(''):'<p class="tiny" style="margin:10px 0">Поки немає запитань</p>'}
 <form id="add-comment" style="margin-top:13px"><input type="hidden" name="ledgerId" value="${esc(x.id)}"><textarea class="textarea" name="message" placeholder="Поставити запитання або відповісти..." required maxlength="1500"></textarea><button class="btn primary sm" type="submit" style="margin-top:8px">Надіслати</button></form>`:''}
-${cashier()&&['IN','OUT'].includes(x.kind)&&!rev?`<div class="divider"></div><h3>Виправити облікову помилку</h3><p class="tiny" style="margin:8px 0">Сторно створить новий запис на протилежну суму. Первинна операція залишиться. Після цього внесіть правильну операцію.</p><form id="reverse"><input type="hidden" name="id" value="${esc(x.id)}"><textarea class="textarea" name="reason" minlength="5" placeholder="Обов'язкова причина коригування" required></textarea><button class="btn danger sm" type="submit">Сторнувати операцію</button></form>`:''}</article></div>`;}
+${cashier()&&['IN','OUT'].includes(x.kind)&&!rev&&!req?`<div class="divider"></div><h3>Виправити облікову помилку</h3><p class="tiny" style="margin:8px 0">Касир подає заявку. Адміністратор підтверджує сторно окремо; до рішення залишок не змінюється.</p><form id="reverse"><input type="hidden" name="id" value="${esc(x.id)}"><textarea class="textarea" name="reason" minlength="5" placeholder="Обов'язкова причина коригування" required></textarea><button class="btn danger sm" type="submit">Надіслати заявку адміністратору</button></form>`:''}</article></div>`;}
 function previewModal(){let p=A.preview;return `<div class="modalback" data-act="close-preview"><div class="modal" data-stop="true"><div class="headrow"><h3>Чек: ${esc(p.name)}</h3><button class="btn sm" data-act="close-preview">Закрити ×</button></div><div class="divider"></div>${p.mime==='application/pdf'?`<iframe class="pdfview" src="${p.url}"></iframe>`:`<img class="imageview" src="${p.url}" alt="Чек">`}<div style="margin-top:12px"><a class="btn secondary" href="${p.url}" download="${esc(p.name)}">Завантажити файл</a></div></div></div>`;}
 function secretModal(){let s=A.secret;return `<div class="modalback"><div class="modal"><div class="headrow"><h2>Тимчасовий доступ</h2><button class="btn sm" data-act="secret-close">×</button></div><p class="status warn" style="margin:12px 0">Скопіюйте пароль зараз і передайте особисто. Після закриття він більше не відображатиметься.</p><p>Логін: <b>${esc(s.login)}</b></p><p style="margin:12px 0">Тимчасовий пароль: <b class="clamp">${esc(s.password)}</b></p><button class="btn primary" data-act="copy-secret">Скопіювати логін і пароль</button></div></div>`;}
 function expenseStatsWeb(periodRows,allRows){
@@ -187,7 +230,7 @@ if(f.id==='handover'){await request('recordHandover',d);toast('Акт перед
 if(f.id==='add-transaction'){d.kind=A.kind;let file=f.querySelector('input[type=file]')?.files?.[0];if(d.kind==='OUT')d.receipt=await toData(file);if(d.kind==='IN'&&d.personId==='OTHER')d.personId='';await request('addTransaction',d);try{localStorage.removeItem(draftKey());}catch(e){}toast('Операцію додано.');return;}
 if(f.id==='add-receipt'){d.receipt=await toData(f.querySelector('input[type=file]').files[0]);await request('addReceipt',d);toast('Чек додано.');return;}
 if(f.id==='add-comment'){await request('comment',d);toast('Коментар додано.');return;}
-if(f.id==='reverse'){if(!confirm('Створити окрему сторнувальну операцію? Первинний запис залишиться в історії.'))return;await request('reverseTransaction',d);toast('Коригування проведено.');return;}
+if(f.id==='reverse'){if(!confirm('Надіслати заявку адміністратору? Залишок поки не зміниться.'))return;await request('reverseTransaction',d);toast('Заявку подано. Баланс не змінено.');return;}
 if(f.id==='bootstrap-admin'||f.id==='invite'){let r=await request(f.id==='bootstrap-admin'?'bootstrapAdmin':'invite',d);A.secret={login:r.login,password:r.password};render();return;}
 if(f.id==='propose'){await request('proposeElection',d);toast('Ініціативу створено.');return;}
 }catch(err){toast(err.message,true);}
@@ -199,6 +242,17 @@ else if(act==='refresh')await load();
 else if(act==='kind'){A.kind=button.dataset.kind;render();}
 else if(act==='detail'){A.selected=button.dataset.id;render();}
 else if(act==='close-detail'){if(ev.target===button || button.tagName==='BUTTON'){A.selected=null;render();}}
+else if(act==='reversal-ack'){await handler('ackReversal',{id:button.dataset.id},'Ознайомлення зафіксовано.');}
+else if(act==='reversal-dispute'){let reason=prompt('Поясніть заперечення');if(reason===null)return;
+  if(reason.trim().length<5)throw new Error('Опишіть причину щонайменше п\'ятьма символами');
+  await handler('disputeReversal',{id:button.dataset.id,reason:reason.trim()},'Заперечення видно всім.');}
+else if(act==='reversal-reject'){let reason=prompt('Причина відхилення');if(reason===null)return;
+  if(!reason.trim())throw new Error('Вкажіть причину');
+  await handler('decideReversal',{id:button.dataset.id,decision:'REJECT',reason:reason.trim()},'Відхилено.');}
+else if(act==='reversal-approve'){if(!confirm('Підтвердити сторнування зі зміною балансу?'))return;
+  let reason=prompt('Коментар адміністратора');if(reason===null)return;
+  if(!reason.trim())throw new Error('Вкажіть коментар');
+  await handler('decideReversal',{id:button.dataset.id,decision:'APPROVE',reason:reason.trim()},'Сторнування схвалено.');}
 else if(act==='receipt'){let r=await invoke('getReceipt',{id:button.dataset.id});A.preview={name:r.name,mime:r.mime,url:saveBlob(r)};render();}
 else if(act==='close-preview'){if(ev.target!==button && button.tagName!=='BUTTON')return;if(A.preview?.url)URL.revokeObjectURL(A.preview.url);A.preview=null;render();}
 else if(act==='event'){const ref=button.dataset.ref;if(A.state.ledger.some(x=>x.id===ref)){A.selected=ref;render();}else{A.page='activity';render();}}
