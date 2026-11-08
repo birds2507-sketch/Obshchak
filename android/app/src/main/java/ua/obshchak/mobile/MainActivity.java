@@ -233,6 +233,7 @@ public class MainActivity extends ComponentActivity {
     else if(page.equals("reports"))drawReports();
     else if(page.equals("stats"))drawExpenseStats();
     else if(page.equals("activity"))drawActivity();
+    else if(page.equals("reversals"))drawReversals();
     else if(page.equals("settings"))drawSettings();
     bottomBar(root);
   }
@@ -278,8 +279,8 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void showMenu(){
-    final String[] labels={"Головна","Операції","Учасники","Звіти","Статистика витрат","Чеки витрат","Запитання","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
-    final String[] targets={"home","history","users","reports","stats","receipts","questions","queue","votes","activity","refresh","settings","web","logout"};
+    final String[] labels={"Головна","Операції","Учасники","Звіти","Статистика витрат","Чеки витрат","Запитання","Сторнування","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
+    final String[] targets={"home","history","users","reports","stats","receipts","questions","reversals","queue","votes","activity","refresh","settings","web","logout"};
     new AlertDialog.Builder(this).setTitle("ОБЩАК · Меню")
       .setItems(labels,(dialog,which)->{
         String target=targets[which];
@@ -503,6 +504,19 @@ public class MainActivity extends ComponentActivity {
     MonthlyCashSummary month=MonthlyCashSummary.calculate(
       preview,selectedMonth,state.optJSONArray("ledger")!=null);
     drawMonthBar();
+    JSONArray reverseRequests=state.optJSONArray("reversalRequests");
+    int waitingReversals=0;
+    if(reverseRequests!=null)for(int i=0;i<reverseRequests.length();i++){
+      JSONObject r=reverseRequests.optJSONObject(i);
+      if(r!=null&&(r.optString("status").equals("PENDING")||
+        r.optString("status").equals("DISPUTED")))waitingReversals++;
+    }
+    if(waitingReversals>0){
+      LinearLayout alert=card(screen);alert.setBackground(background(0xfffff2d4,13));
+      textInto(alert,"⚠ Заявок на сторнування: "+waitingReversals,15,0xff8b6000,true);
+      textInto(alert,"Очікують рішення адміністратора · залишок поки без змін",12,MUTED,false);
+      alert.setOnClickListener(v->go("reversals"));
+    }
 
     // Compact one-line balance, using the *selected month's* end balance.
     LinearLayout cashCard=card(screen);
@@ -1343,12 +1357,28 @@ public class MainActivity extends ComponentActivity {
         }
       },true);
     }
-    if(isCashier()&&(item.optString("kind").equals("OUT")||item.optString("kind").equals("IN")))
-      button(layout,"↶ Сторнувати помилкову операцію",()->prompt("Причина сторнування",reason->{
-        JSONObject d=new JSONObject();try{d.put("id",item.optString("id"));d.put("reason",reason);}catch(Exception ignored){}
-        new AlertDialog.Builder(this).setTitle("Незмінність історії").setMessage("Створити окрему коригувальну операцію? Первинну витрату не буде видалено.")
-          .setNegativeButton("Ні",null).setPositiveButton("Так",(di,w)->remote("reverseTransaction",d,secure.token(),r->{message("Сторнування створено");refresh();})).show();
-      }),false);
+    if(item.optString("kind").equals("OUT")||item.optString("kind").equals("IN")){
+      JSONObject request=activeReversalFor(item.optString("id"));
+      if(request!=null){
+        textInto(layout,"Сторнування: "+reversalStatusLabel(request.optString("status")),
+          14,0xff986000,true);
+        textInto(layout,"Причина: "+request.optString("reason"),12,MUTED,false);
+        button(layout,"Переглянути заявку",()->go("reversals"),false);
+      }else if(isCashier()&&!hasApprovedReversal(item.optString("id"))){
+        button(layout,"↶ Запит на сторнування",()->prompt("Причина сторнування",reason->{
+          if(reason.trim().length()<5){message("Опишіть причину щонайменше п'ятьма символами");return;}
+          JSONObject d=new JSONObject();
+          try{d.put("id",item.optString("id"));d.put("reason",reason.trim());}
+          catch(Exception ignored){}
+          new AlertDialog.Builder(this).setTitle("Підтвердження адміністратора")
+            .setMessage("Заявка стане видимою всім. Залишок не зміниться до рішення адміністратора.")
+            .setNegativeButton("Скасувати",null)
+            .setPositiveButton("Надіслати",(di,w)->remote("reverseTransaction",d,secure.token(),
+              r->{message("Заявку створено. Очікуємо адміністратора.");go("reversals");refresh();}))
+            .show();
+        }),false);
+      }
+    }
     ScrollView v=new ScrollView(this);v.addView(layout);
     AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Деталі операції")
       .setView(v).setPositiveButton("Закрити",null).create();
@@ -1707,6 +1737,120 @@ public class MainActivity extends ComponentActivity {
     },true);
     textInto(screen,"PDF містить усі операції та позначки «Є чек» / «Немає чека». Самі фото залишаються в онлайн-журналі.",12,MUTED,false);
   }
+  private JSONObject activeReversalFor(String originalId){
+    JSONArray requests=state.optJSONArray("reversalRequests");
+    if(requests==null)return null;
+    for(int i=0;i<requests.length();i++){
+      JSONObject r=requests.optJSONObject(i);
+      if(r!=null && r.optString("original_id").equals(originalId) &&
+         (r.optString("status").equals("PENDING")||
+          r.optString("status").equals("DISPUTED")))return r;
+    }
+    return null;
+  }
+  private boolean hasApprovedReversal(String originalId){
+    JSONArray ledger=state.optJSONArray("ledger");
+    if(ledger!=null)for(int i=0;i<ledger.length();i++){
+      JSONObject x=ledger.optJSONObject(i);
+      if(x!=null&&x.optString("kind").equals("REVERSAL")&&
+         x.optString("correction_of").equals(originalId))return true;
+    }
+    return false;
+  }
+  private String reversalStatusLabel(String status){
+    if(status.equals("PENDING"))return "⏳ Очікує адміністратора · залишок без змін";
+    if(status.equals("DISPUTED"))return "⚠ Учасник заперечив · схвалення заблоковано";
+    if(status.equals("APPROVED"))return "✓ Адміністратор схвалив";
+    if(status.equals("REJECTED"))return "✕ Адміністратор відхилив";
+    return status;
+  }
+  private void reversalAction(String action,String id,String decision,String label){
+    prompt(label,reason->{
+      if(reason.trim().isEmpty()){message("Напишіть пояснення");return;}
+      if(action.equals("disputeReversal")&&reason.trim().length()<5){
+        message("Поясніть заперечення щонайменше 5 символами");return;
+      }
+      JSONObject body=new JSONObject();
+      try{
+        body.put("id",id);body.put("reason",reason.trim());
+        if(!decision.isEmpty())body.put("decision",decision);
+      }catch(Exception ignored){}
+      if(decision.equals("APPROVE")){
+        new AlertDialog.Builder(this).setTitle("Підтвердити сторнування?")
+          .setMessage("Тільки зараз буде створено фінансову коригувальну операцію. Цю дію не можна скасувати.")
+          .setNegativeButton("Ні",null)
+          .setPositiveButton("Підтвердити",(d,w)->remote(action,body,secure.token(),
+            result->{message("Рішення збережено");refresh();}))
+          .show();
+      }else remote(action,body,secure.token(),result->{
+        message("Рішення збережено та видно всім");refresh();
+      });
+    });
+  }
+  private void drawReversals(){
+    textInto(screen,"Контроль сторнувань",23,NAVY,true);
+    textInto(screen,"Касир подає заявку. До рішення адміністратора загальний баланс не змінюється. Усі учасники бачать причину та рішення.",
+      13,MUTED,false);
+    JSONArray requests=state.optJSONArray("reversalRequests");
+    if(requests==null||requests.length()==0){
+      textInto(screen,"Заявок на сторнування немає",15,MUTED,false);return;
+    }
+    JSONArray ledger=state.optJSONArray("ledger");
+    for(int i=0;i<requests.length();i++){
+      JSONObject req=requests.optJSONObject(i);if(req==null)continue;
+      String status=req.optString("status");
+      JSONObject original=null;
+      if(ledger!=null)for(int j=0;j<ledger.length();j++){
+        JSONObject x=ledger.optJSONObject(j);
+        if(x!=null&&x.optString("id").equals(req.optString("original_id"))){original=x;break;}
+      }
+      LinearLayout c=card(screen);
+      boolean waiting=status.equals("PENDING"),disputed=status.equals("DISPUTED");
+      if(waiting||disputed)c.setBackground(background(disputed?0xffffe7e5:0xfffff3d7,14));
+      textInto(c,reversalStatusLabel(status),14,disputed?0xffb44b40:waiting?0xff8d6400:TEAL,true);
+      if(original!=null){
+        textInto(c,(original.optString("kind").equals("IN")?"Прихід: ":"Розхід: ")+
+          original.optString("purpose")+" · "+money(Math.abs(original.optLong("amount")))+" ₴",
+          15,NAVY,true);
+        textInto(c,"Дата операції: "+displayDate(original.optString("date"))+
+          " · Створено: "+original.optString("created_at"),12,MUTED,false);
+        if(original.optString("kind").equals("IN"))
+          textInto(c,"Внесок: "+original.optString("person_name"),13,NAVY,true);
+      }
+      textInto(c,"Причина: "+req.optString("reason"),13,NAVY,false);
+      textInto(c,"Запит подав: "+nameOf(req.optString("requested_by"))+
+        " · "+req.optString("created_at"),12,MUTED,false);
+      if(!req.optString("objection").isEmpty())
+        textInto(c,"Заперечення "+nameOf(req.optString("objected_by"))+
+          ": "+req.optString("objection"),12,0xffb44b40,true);
+      if(!req.optString("acknowledged_by").isEmpty())
+        textInto(c,"Внескодавець ознайомився: "+nameOf(req.optString("acknowledged_by")),
+          12,TEAL,true);
+      if(!req.optString("decided_by").isEmpty())
+        textInto(c,"Рішення: "+nameOf(req.optString("decided_by"))+
+          " · "+req.optString("decided_at"),12,MUTED,false);
+      final String reqId=req.optString("id");
+      if(waiting&&!settings.userId().equals(req.optString("requested_by"))){
+        if(original!=null&&original.optString("kind").equals("IN")&&
+           original.optString("person_id").equals(settings.userId())){
+          button(c,"Ознайомився зі сторнуванням мого внеску",()->{
+            JSONObject data=new JSONObject();
+            try{data.put("id",reqId);}catch(Exception ignored){}
+            remote("ackReversal",data,secure.token(),result->{message("Ознайомлення записано");refresh();});
+          },false);
+        }
+        button(c,"⚠ Заперечити сторнування",()->
+          reversalAction("disputeReversal",reqId,"","Чому сторнування неправильне?"),false);
+      }
+      if(isAdmin()&&(waiting||disputed)){
+        button(c,"Відхилити заявку",()->
+          reversalAction("decideReversal",reqId,"REJECT","Пояснення відхилення"),false);
+        if(waiting)button(c,"✓ Схвалити сторнування",()->
+          reversalAction("decideReversal",reqId,"APPROVE","Коментар адміністратора"),true);
+      }
+    }
+  }
+
   private void drawActivity(){
     textInto(screen,"Останні події",23,NAVY,true);
     JSONArray events=state.optJSONArray("events");if(events!=null)for(int i=0;i<Math.min(50,events.length());i++){
