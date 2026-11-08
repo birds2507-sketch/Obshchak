@@ -88,9 +88,37 @@ ${cashier()?`<form id="add-receipt" style="margin-top:12px"><input type="hidden"
 ${cashier()&&['IN','OUT'].includes(x.kind)&&!rev?`<div class="divider"></div><h3>Виправити облікову помилку</h3><p class="tiny" style="margin:8px 0">Сторно створить новий запис на протилежну суму. Первинна операція залишиться. Після цього внесіть правильну операцію.</p><form id="reverse"><input type="hidden" name="id" value="${esc(x.id)}"><textarea class="textarea" name="reason" minlength="5" placeholder="Обов'язкова причина коригування" required></textarea><button class="btn danger sm" type="submit">Сторнувати операцію</button></form>`:''}</article></div>`;}
 function previewModal(){let p=A.preview;return `<div class="modalback" data-act="close-preview"><div class="modal" data-stop="true"><div class="headrow"><h3>Чек: ${esc(p.name)}</h3><button class="btn sm" data-act="close-preview">Закрити ×</button></div><div class="divider"></div>${p.mime==='application/pdf'?`<iframe class="pdfview" src="${p.url}"></iframe>`:`<img class="imageview" src="${p.url}" alt="Чек">`}<div style="margin-top:12px"><a class="btn secondary" href="${p.url}" download="${esc(p.name)}">Завантажити файл</a></div></div></div>`;}
 function secretModal(){let s=A.secret;return `<div class="modalback"><div class="modal"><div class="headrow"><h2>Тимчасовий доступ</h2><button class="btn sm" data-act="secret-close">×</button></div><p class="status warn" style="margin:12px 0">Скопіюйте пароль зараз і передайте особисто. Після закриття він більше не відображатиметься.</p><p>Логін: <b>${esc(s.login)}</b></p><p style="margin:12px 0">Тимчасовий пароль: <b class="clamp">${esc(s.password)}</b></p><button class="btn primary" data-act="copy-secret">Скопіювати логін і пароль</button></div></div>`;}
+function expenseStatsWeb(periodRows,allRows){
+  // Report uses only Google-confirmed operations, preserving one shared balance.
+  const originals=new Map(allRows.filter(x=>x.kind==='OUT').map(x=>[x.id,x]));
+  const directions=new Map();
+  for(const x of periodRows){
+    const orig=x.kind==='REVERSAL'?originals.get(x.correction_of):x;
+    if(!orig||orig.kind!=='OUT')continue;
+    const direction=orig.expense_target||'Без напряму';
+    const category=orig.category||'Без категорії';
+    if(!directions.has(direction))directions.set(direction,new Map());
+    const group=directions.get(direction);
+    group.set(category,(group.get(category)||0)-Number(x.amount));
+  }
+  let html='<details class="card"><summary style="cursor:pointer;font-size:18px;font-weight:750;color:#0b605c">'
+    +'▤ Статистика витрат за категоріями ▾</summary>';
+  html+='<p class="tiny" style="margin:12px 0">За вибраний період звіту; сторно віднімається від відповідної категорії.</p>';
+  if(!directions.size)html+='<p class="empty">Витрат за період немає</p>';
+  for(const [direction,groups] of directions){
+    let total=0;for(const amount of groups.values())total+=amount;
+    html+='<div style="margin:13px 0 6px"><div class="headrow"><b>'+esc(direction)
+      +'</b><strong>'+euro(total)+'</strong></div>';
+    for(const [category,value] of [...groups.entries()].sort((a,b)=>b[1]-a[1]))
+      html+='<div class="rowitem"><span>'+esc(category)+'</span><b>'+euro(value)+'</b></div>';
+    html+='</div>';
+  }
+  return html+'</details>';
+}
 function reportsPage(){const d=new Date(),monthStart=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),'01'].join('-');let from=A.reportFrom||monthStart,to=A.reportTo||dateLocal();let ledger=A.state.ledger, b=ledger.filter(x=>x.date<from),inRange=ledger.filter(x=>x.date>=from&&x.date<=to),calc=netOf(inRange);let opening=netOf(b).balance;let contrib={};inRange.forEach(x=>{let orig=x.kind==='REVERSAL'?A.state.ledger.find(r=>r.id===x.correction_of):x;if(orig?.kind==='IN'){let n=orig.person_name||'Інше надходження';contrib[n]=(contrib[n]||0)+Number(x.amount);}});return `<div class="stack"><h1>Звіти</h1><div class="card"><div class="rowform"><div class="field"><label>З дати</label><input id="r-from" type="date" class="input" value="${esc(from)}"></div><div class="field"><label>До дати</label><input id="r-to" type="date" class="input" value="${esc(to)}"></div></div><div class="headrow"><button class="btn primary" data-act="report-filter">Показати</button><button class="btn secondary" data-act="pdf">⬇ PDF-звіт</button></div></div>
 <div class="card"><div class="tiny">Залишок на кінець періоду</div><div class="bigmoney">${euro(opening+calc.balance)}</div><div class="grid2"><div><div class="tiny">Прихід за період</div><div class="metric positive">${euro(calc.income)}</div></div><div><div class="tiny">Розхід за період</div><div class="metric negative">${euro(calc.expense)}</div></div></div><p class="tiny" style="margin-top:14px">Залишок на початок: ${euro(opening)} · ${inRange.length} операцій за період, включно з коригуваннями</p></div>
-<div class="card"><h2>Внески за період</h2>${Object.keys(contrib).length?Object.keys(contrib).sort().map(n=>`<div class="rowitem"><b>${esc(n)}</b><b class="positive">${euro(contrib[n])}</b></div>`).join(''):'<div class="empty">Внесків у періоді немає</div>'}<p class="tiny">Показники — із введених операцій. PDF містить усі операції та позначки про наявність чеків, але не їхні фотографії.</p></div></div>`;}
+<div class="card"><h2>Внески за період</h2>${Object.keys(contrib).length?Object.keys(contrib).sort().map(n=>`<div class="rowitem"><b>${esc(n)}</b><b class="positive">${euro(contrib[n])}</b></div>`).join(''):'<div class="empty">Внесків у періоді немає</div>'}<p class="tiny">Показники — із введених операцій. PDF містить усі операції та позначки про наявність чеків, але не їхні фотографії.</p></div>
+${expenseStatsWeb(inRange,A.state.ledger)}</div>`;}
 function netOf(rows){let ids={};A.state.ledger.forEach(x=>ids[x.id]=x);let out={income:0,expense:0,balance:0};rows.forEach(x=>{let a=Number(x.amount),orig=x.kind==='REVERSAL'?ids[x.correction_of]:x;out.balance+=a;if(orig?.kind==='IN')out.income+=a;if(orig?.kind==='OUT')out.expense-=a;});return out;}
 function bootstrapForm(){return `<div class="card formwrap"><h2>Створити адміністратора</h2><p class="tiny">Тільки один раз. Касир залишиться касиром; адміністратор керуватиме людьми та паролями.</p><form id="bootstrap-admin"><div class="rowform"><div class="field"><label>Ім'я адміністратора</label><input class="input" name="name" required maxlength="80"></div><div class="field"><label>Логін</label><input class="input" name="login" pattern="[a-zA-Z0-9._-]{3,30}" required></div></div><div class="field"><label>Тимчасовий PIN (4 цифри, необов'язково)</label><input class="input" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="Порожньо — сильний випадковий пароль"></div><button class="btn primary" type="submit">Створити адміністратора</button></form></div>`;}
 function peoplePage(){let all=A.state.users;return `<div class="stack"><div class="headrow"><h1>Учасники</h1><span class="tag">${all.filter(x=>x.active).length}/10 активних</span></div>
