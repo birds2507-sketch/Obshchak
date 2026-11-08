@@ -78,6 +78,8 @@ public class MainActivity extends ComponentActivity {
   private String historyQuery="";
   private boolean historyWithoutReceipt=false;
   private boolean historyForMonth=true;
+  private boolean statsMonthOnly=true;
+  private String statsDirection=ExpenseStatistics.ALL;
   private String selectedMonth=YearMonth.now(ZoneId.of("Europe/Kyiv")).toString();
   private LinearLayout receiptPreview;
   private final Set<UUID> completedSyncJobs=new HashSet<>();
@@ -229,6 +231,7 @@ public class MainActivity extends ComponentActivity {
     else if(page.equals("users"))drawUsers();
     else if(page.equals("votes"))drawVotes();
     else if(page.equals("reports"))drawReports();
+    else if(page.equals("stats"))drawExpenseStats();
     else if(page.equals("activity"))drawActivity();
     else if(page.equals("settings"))drawSettings();
     bottomBar(root);
@@ -275,8 +278,8 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void showMenu(){
-    final String[] labels={"Головна","Операції","Учасники","Звіти","Чеки витрат","Запитання","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
-    final String[] targets={"home","history","users","reports","receipts","questions","queue","votes","activity","refresh","settings","web","logout"};
+    final String[] labels={"Головна","Операції","Учасники","Звіти","Статистика витрат","Чеки витрат","Запитання","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
+    final String[] targets={"home","history","users","reports","stats","receipts","questions","queue","votes","activity","refresh","settings","web","logout"};
     new AlertDialog.Builder(this).setTitle("ОБЩАК · Меню")
       .setItems(labels,(dialog,which)->{
         String target=targets[which];
@@ -592,6 +595,8 @@ public class MainActivity extends ComponentActivity {
     String extra=row.isLocal()?row.tx.optString("personName"):row.tx.optString("person_name");
     if(extra.isEmpty())extra=row.tx.optString("category");
     if(!extra.isEmpty())textInto(detail,extra,11,MUTED,false);
+    if(row.kind().equals("OUT"))
+      textInto(detail,"Напрям: "+ExpenseStatistics.directionOf(row),11,MUTED,false);
     if(row.isLocal()){
       textInto(detail,localTransactionStatus(row.local),12,
         LocalStore.FAILED.equals(row.local.status)||LocalStore.AUTH.equals(row.local.status)?
@@ -638,6 +643,7 @@ public class MainActivity extends ComponentActivity {
       textInto(view,"Оперативний залишок після операції: "+money(row.balanceAfter)+" ₴",
         14,TEAL,true);
     if(row.kind().equals("OUT")){
+      textInto(view,"Напрям: "+ExpenseStatistics.directionOf(row),12,NAVY,true);
       textInto(view,"Категорія: "+row.tx.optString("category"),12,MUTED,false);
       textInto(view,"Збережених чеків: "+row.localReceiptCount(),12,MUTED,false);
     }
@@ -822,6 +828,7 @@ public class MainActivity extends ComponentActivity {
     if(expense){
       String chosen=draft.optString("category");
       if(chosen.isEmpty())chosen=ExpenseCategoryPicker.last(this);
+      expenseTargetField(draft.optString("expenseTarget"));
       expenseCategoryField(chosen);
     }else{
       textInto(screen,"Категорія: Внесок у спільну касу",14,TEAL,true);
@@ -893,6 +900,43 @@ public class MainActivity extends ComponentActivity {
       ()->queueForm(true),false);
     textInto(screen,"Операція одразу потрапляє в касу на телефоні. Google синхронізується у фоні.",
       12,MUTED,false);
+  }
+
+  private void expenseTargetField(String initial){
+    textInto(screen,"Напрям витрати *",14,NAVY,true);
+    textInto(screen,"Виберіть, куди спрямовано кошти",11,MUTED,false);
+    LinearLayout tabs=row();
+    screen.addView(tabs,new LinearLayout.LayoutParams(-1,dp(64)));
+    String[] selected={initial};
+    final String[] choices={"МП","ГМЕ 1","ГМЕ 2"};
+    final ArrayList<TextView> tiles=new ArrayList<>();
+    for(String choice:choices){
+      TextView tile=text(choice,16,NAVY,true);
+      tile.setGravity(Gravity.CENTER);
+      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(53),1f);
+      lp.setMargins(dp(2),dp(4),dp(2),dp(3));
+      tabs.addView(tile,lp);tiles.add(tile);
+    }
+    Runnable redraw=()->{
+      for(int i=0;i<choices.length;i++){
+        boolean active=choices[i].equals(selected[0]);
+        tiles.get(i).setText((active?"✓  ":"")+choices[i]);
+        tiles.get(i).setTextColor(active?Color.WHITE:NAVY);
+        tiles.get(i).setBackground(background(active?0xff087b64:Color.WHITE,12));
+      }
+    };
+    for(int i=0;i<choices.length;i++){
+      final String choice=choices[i];
+      tiles.get(i).setOnClickListener(v->{
+        saveDraft();
+        JSONObject d=settings.getDraft(formKind);
+        try{d.put("expenseTarget",choice);settings.saveDraft(formKind,d);}
+        catch(Exception error){message("Не вдалося зберегти напрям");return;}
+        selected[0]=choice;redraw.run();
+      });
+    }
+    redraw.run();
+    spacer(screen,5);
   }
 
   private void expenseCategoryField(String selected){
@@ -979,10 +1023,14 @@ public class MainActivity extends ComponentActivity {
       message("Вкажіть, від кого отримано гроші");return;}
     if(formKind.equals("OUT")&&d.optString("category","").trim().isEmpty()){
       message("Вкажіть категорію витрати");return;}
+    if(formKind.equals("OUT")&&
+       !java.util.Arrays.asList("МП","ГМЕ 1","ГМЕ 2").contains(d.optString("expenseTarget"))){
+      message("Оберіть напрям витрати: МП, ГМЕ 1 або ГМЕ 2");return;}
     try {
       JSONObject tx=new JSONObject();tx.put("kind",formKind);tx.put("date",d.getString("date"));tx.put("amount",amount.replace(',','.'));
       tx.put("purpose",purpose);if(formKind.equals("IN")){tx.put("personName",d.optString("personName"));}
       else {tx.put("category",d.optString("category"));
+        tx.put("expenseTarget",d.optString("expenseTarget"));
         tx.put("noReceiptReason",files.length()>0?"Чек збережений на телефоні; очікується синхронізація":d.optString("noReceiptReason"));}
       String id=UUID.randomUUID().toString();JSONObject envelope=new JSONObject();envelope.put("tx",tx);envelope.put("files",files);
       outbox.add(id,settings.userId(),envelope.toString());
@@ -1144,7 +1192,7 @@ public class MainActivity extends ComponentActivity {
         String number=String.format(Locale.US,"%.2f",Math.abs(row.signedCents)/100.0);
         String date=row.tx.optString("date");
         String name=row.tx.optString("purpose")+" "+row.tx.optString("personName")+" "+
-          row.tx.optString("person_name")+" "+row.tx.optString("category");
+          row.tx.optString("person_name")+" "+row.tx.optString("category")+" "+ExpenseStatistics.directionOf(row);
         if(!name.toLowerCase(new Locale("uk","UA")).contains(query)&&
            !displayDate(date).contains(query)&&!date.contains(query)&&
            !amount.contains(compact)&&!number.contains(compact.replace(',','.')))continue;
@@ -1198,6 +1246,9 @@ public class MainActivity extends ComponentActivity {
         row.signedCents<0?0xffb84d46:TEAL,true);
       textInto(c,displayDate(row.tx.optString("date")),15,NAVY,true);
       textInto(c,row.tx.optString("purpose"),13,MUTED,false);
+      if(kind.equals("OUT"))
+        textInto(c,"Напрям: "+ExpenseStatistics.directionOf(row)+" · "+
+          row.tx.optString("category"),12,MUTED,false);
       if(row.isLocal())
         textInto(c,localTransactionStatus(row.local),13,
           LocalStore.FAILED.equals(row.local.status)||LocalStore.AUTH.equals(row.local.status)?
@@ -1220,6 +1271,9 @@ public class MainActivity extends ComponentActivity {
     LinearLayout layout=new LinearLayout(this);layout.setOrientation(LinearLayout.VERTICAL);layout.setPadding(dp(16),dp(10),dp(16),dp(8));
     textInto(layout,item.optString("purpose")+" · "+money(Math.abs(item.optLong("amount")))+" грн",18,NAVY,true);
     textInto(layout,"Дата: "+displayDate(item.optString("date")),15,NAVY,true);
+    if(item.optString("kind").equals("OUT"))
+      textInto(layout,"Напрям: "+item.optString("expense_target","Без напряму")+
+        " · Категорія: "+item.optString("category"),13,MUTED,true);
     Long after=balancesAfterOperations().get(item.optString("id"));
     if(after!=null)textInto(layout,"Залишок після операції: "+money(after)+" ₴",14,TEAL,true);
     JSONArray receipts=state.optJSONArray("receipts");
@@ -1549,6 +1603,88 @@ public class MainActivity extends ComponentActivity {
     }).show();}
   private void simpleAction(String action,String id){JSONObject body=new JSONObject();try{body.put("id",id);}catch(Exception ignored){}
     remote(action,body,secure.token(),r->{message("Успішно");refresh();});}
+
+  private void drawExpenseStats(){
+    textInto(screen,"Статистика витрат",23,NAVY,true);
+    textInto(screen,"За напрямами МП / ГМЕ 1 / ГМЕ 2 та категоріями",12,MUTED,false);
+    LinearLayout periods=row();screen.addView(periods);
+    button(periods,statsMonthOnly?"✓ За місяць":"За місяць",()->{
+      statsMonthOnly=true;draw();
+    },statsMonthOnly);
+    button(periods,statsMonthOnly?"Увесь час":"✓ Увесь час",()->{
+      statsMonthOnly=false;draw();
+    },!statsMonthOnly);
+    if(statsMonthOnly)drawMonthBar();
+    LinearLayout selector=card(screen);
+    selector.setPadding(dp(12),dp(10),dp(12),dp(10));
+    TextView filter=text("Напрям: "+statsDirection+"  ▾",16,NAVY,true);
+    filter.setPadding(dp(5),dp(9),dp(5),dp(9));
+    selector.addView(filter);
+    selector.setOnClickListener(v->showStatsDirection());
+    filter.setOnClickListener(v->showStatsDirection());
+
+    ExpenseStatistics stats=ExpenseStatistics.calculate(cashPreview().rows,
+      statsMonthOnly,selectedMonth,statsDirection);
+    LinearLayout summary=card(screen);
+    summary.setBackground(background(0xffe9f5f1,15));
+    textInto(summary,"Всього витрат (з урахуванням сторно)",13,MUTED,true);
+    textInto(summary,money(stats.netCents)+" ₴",27,NAVY,true);
+    textInto(summary,"Операцій: "+stats.expenses+
+      (stats.reversals>0?" · Сторнувань: "+stats.reversals:""),12,MUTED,false);
+    if(stats.local>0)
+      textInto(summary,"⟳ "+stats.local+" записів ще синхронізуються. "+
+        "Підсумок оперативний.",12,0xff926600,true);
+    if(stats.missingDirection>0)
+      textInto(summary,"Історичних витрат без напряму: "+stats.missingDirection,
+        12,0xff926600,false);
+
+    if(ExpenseStatistics.ALL.equals(statsDirection)){
+      textInto(screen,"За напрямами",18,NAVY,true);
+      drawExpenseGroups(stats.byDirection,stats.netCents);
+    }
+    textInto(screen,"За категоріями",18,NAVY,true);
+    drawExpenseGroups(stats.byCategory,stats.netCents);
+    textInto(screen,"Старі операції без напряму залишаються в історії. "+
+      "Сторнування зменшують суму відповідної категорії, без подвоєння витрат.",
+      12,MUTED,false);
+  }
+
+  private void showStatsDirection(){
+    new AlertDialog.Builder(this).setTitle("Напрям витрат")
+      .setItems(ExpenseStatistics.DIRECTIONS,(dialog,which)->{
+        statsDirection=ExpenseStatistics.DIRECTIONS[which];draw();
+      }).show();
+  }
+
+  private void drawExpenseGroups(Map<String,ExpenseStatistics.Group> source,long total){
+    java.util.List<ExpenseStatistics.Group> groups=ExpenseStatistics.sorted(source);
+    if(groups.isEmpty()){
+      LinearLayout blank=card(screen);
+      textInto(blank,"За вибраними умовами витрат немає",13,MUTED,false);
+      return;
+    }
+    long max=1;
+    for(ExpenseStatistics.Group g:groups)max=Math.max(max,Math.max(0,g.cents));
+    for(ExpenseStatistics.Group g:groups){
+      LinearLayout box=card(screen);
+      LinearLayout top=row();box.addView(top);
+      TextView label=text(g.name,15,NAVY,true);
+      top.addView(label,new LinearLayout.LayoutParams(0,-2,1f));
+      textInto(top,money(g.cents)+" ₴",16,g.cents<0?0xffb54c4c:TEAL,true);
+      String meta=g.expenses+" витрат";
+      if(g.reversals>0)meta+=" · "+g.reversals+" сторно";
+      if(g.local>0)meta+=" · ⟳ "+g.local+" локальних";
+      textInto(box,meta,12,MUTED,false);
+      android.widget.ProgressBar bar=new android.widget.ProgressBar(this,null,
+        android.R.attr.progressBarStyleHorizontal);
+      bar.setMax(1000);
+      bar.setProgress((int)(Math.max(0,g.cents)*1000.0/max));
+      bar.setProgressTintList(android.content.res.ColorStateList.valueOf(0xff087b64));
+      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(7));
+      lp.topMargin=dp(8);
+      box.addView(bar,lp);
+    }
+  }
 
   private void drawReports(){
     textInto(screen,"Звіт общака",23,NAVY,true);
