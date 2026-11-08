@@ -3,6 +3,7 @@ package ua.obshchak.mobile;
 import android.Manifest;
 import android.app.AlertDialog;
 import android.app.DatePickerDialog;
+import android.graphics.BitmapFactory;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -830,7 +831,7 @@ public class MainActivity extends ComponentActivity {
     EditText purpose=fields.get("purpose");
     if(purpose!=null){purpose.setMinHeight(dp(58));purpose.setHint("Коротко: на що витрачено кошти");}
 
-    drawMethodChoices(draft.optString("method","CASH"),
+    drawMethodChoices(draft.optString("method",getPreferences(MODE_PRIVATE).getString("last_payment_"+formKind,"CASH")),
       expense?"Спосіб оплати":"Спосіб отримання");
 
     if(expense){
@@ -966,17 +967,42 @@ public class MainActivity extends ComponentActivity {
       settings.saveDraft(formKind,d);
     }catch(Exception ignored){}
   }
-  private void showDraftFiles(){if(filesLabel==null)return;
-    JSONArray a=settings.getDraft("OUT").optJSONArray("files");
-    if(a==null||a.length()==0){filesLabel.setText("Чеків поки немає. Можна прикріпити кілька.");return;}
-    StringBuilder sb=new StringBuilder("Локально збережено чеків: "+a.length());
-    for(int i=0;i<a.length();i++)sb.append("\n✓ ").append(a.optJSONObject(i).optString("name","Фото"));
-    filesLabel.setText(sb.toString());
+  private void showDraftFiles(){
+    if(filesLabel==null)return;
+    JSONArray list=settings.getDraft("OUT").optJSONArray("files");
+    if(receiptPreview!=null)receiptPreview.removeAllViews();
+    if(list==null||list.length()==0){
+      filesLabel.setText("Чек не прикріплено. Додайте фото/PDF або вкажіть причину.");
+      return;
+    }
+    StringBuilder names=new StringBuilder("✓ Збережено чеків: "+list.length());
+    for(int i=0;i<list.length();i++){
+      JSONObject file=list.optJSONObject(i);if(file==null)continue;
+      names.append("\n📎 ").append(file.optString("name","Фото"));
+    }
+    filesLabel.setText(names.toString());
+    if(receiptPreview==null)return;
+    JSONObject first=list.optJSONObject(0);
+    if(first==null||!first.optString("mime").startsWith("image/"))return;
+    String path=first.optString("uploadPath");
+    if(path.isEmpty())return;
+    try{
+      BitmapFactory.Options options=new BitmapFactory.Options();
+      options.inSampleSize=8;
+      android.graphics.Bitmap thumb=BitmapFactory.decodeFile(path,options);
+      if(thumb==null)return;
+      ImageView photo=new ImageView(this);
+      photo.setImageBitmap(thumb);photo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+      photo.setBackground(background(0xffedf3f3,12));
+      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(115),dp(135));
+      lp.bottomMargin=dp(8);receiptPreview.addView(photo,lp);
+    }catch(Exception ignored){}
   }
-  private void queueForm(){
+  private void queueForm(){queueForm(false);}
+  private void queueForm(boolean another){
     saveDraft();JSONObject d=settings.getDraft(formKind);
     String amount=d.optString("amount","").trim(),purpose=d.optString("purpose","").trim();
-    if(!amount.matches("[0-9]+([.,][0-9]{1,2})?")||amount.equals("0")||purpose.isEmpty()){
+    if(!amount.matches("[0-9]+([.,][0-9]{1,2})?")||CashLedgerPreview.asCents(amount)<=0||purpose.isEmpty()){
       message("Заповніть коректну суму (більше 0) та призначення");return;}
     if(!d.optString("date","").matches("20[0-9]{2}-[0-9]{2}-[0-9]{2}")){message("Дата має бути у форматі РРРР-ММ-ДД");return;}
     JSONArray files=d.optJSONArray("files");if(files==null)files=new JSONArray();
@@ -990,17 +1016,26 @@ public class MainActivity extends ComponentActivity {
       JSONObject tx=new JSONObject();tx.put("kind",formKind);tx.put("date",d.getString("date"));tx.put("amount",amount.replace(',','.'));
       tx.put("purpose",purpose);if(formKind.equals("IN")){tx.put("method",d.optString("method","CASH"));tx.put("personName",d.optString("personName"));}
       else {tx.put("category",d.optString("category"));
+        tx.put("method",d.optString("method","CASH"));
         tx.put("noReceiptReason",files.length()>0?"Чек збережений на телефоні; очікується синхронізація":d.optString("noReceiptReason"));}
       String id=UUID.randomUUID().toString();JSONObject envelope=new JSONObject();envelope.put("tx",tx);envelope.put("files",files);
       outbox.add(id,settings.userId(),envelope.toString());
+      if("OUT".equals(formKind))ExpenseCategoryPicker.record(this,d.optString("category"));
+      getPreferences(MODE_PRIVATE).edit()
+        .putString("last_payment_"+formKind,d.optString("method","CASH")).apply();
       settings.clearDraft(formKind);
-      // The successful SQLite write is the save point; no Google response is required.
-      go("home");
+      if(another){
+        // A fresh form, same operation type, without waiting for a Google response.
+        page="form";draw();
+      }else{
+        selectedMonth=d.optString("date").substring(0,7);
+        go("home");
+      }
       try{
         QueueSyncWorker.schedule(this);
-        message("✓ Операцію збережено на телефоні. Передача в Google — у фоні.");
+        message("✓ Збережено на телефоні. Передача до Google відбувається у фоні.");
       }catch(Exception schedulingError){
-        message("✓ Операцію збережено. Передачу можна повторити у «Синхронізація».");
+        message("✓ Збережено. Повторіть передачу через «Синхронізація».");
       }
     }catch(Exception ex){message("Не вдалося зберегти запис: "+ex.getMessage());}
   }
