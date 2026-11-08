@@ -78,6 +78,7 @@ public class MainActivity extends ComponentActivity {
   private String historyQuery="";
   private boolean historyWithoutReceipt=false;
   private boolean historyForMonth=true;
+  private EditText debtAmountInput,debtPurposeInput,debtCategoryInput;
   private boolean statsMonthOnly=true;
   private String statsDirection=ExpenseStatistics.ALL;
   private String selectedMonth=YearMonth.now(ZoneId.of("Europe/Kyiv")).toString();
@@ -118,7 +119,7 @@ public class MainActivity extends ComponentActivity {
     if(settings.userId().isEmpty()||secure.token().isEmpty())page="login";
     else {
       String requested=getIntent()!=null?getIntent().getStringExtra("open_page"):"";
-      if("questions".equals(requested)||"history".equals(requested)||
+      if("debts".equals(requested)||"questions".equals(requested)||"history".equals(requested)||
           "activity".equals(requested)||"votes".equals(requested))page=requested;
       EventPollWorker.schedule(this);
       if(!secure.deviceToken().isEmpty()){
@@ -161,7 +162,7 @@ public class MainActivity extends ComponentActivity {
         }
         if(!finishedNew||secure==null||secure.token().isEmpty())return;
         // Keep local cards visible until the confirmed Google ledger is fetched.
-        if(page.equals("home")||page.equals("history")||page.equals("queue"))draw();
+        if(page.equals("home")||page.equals("history")||page.equals("queue")||page.equals("debts"))draw();
         if(!doingRequest)refresh();
       });
   }
@@ -169,7 +170,7 @@ public class MainActivity extends ComponentActivity {
     super.onNewIntent(intent);setIntent(intent);
     if(secure==null||secure.token().isEmpty())return;
     String destination=intent.getStringExtra("open_page");
-    if("questions".equals(destination)||"history".equals(destination)||
+    if("debts".equals(destination)||"questions".equals(destination)||"history".equals(destination)||
        "activity".equals(destination)||"votes".equals(destination)){
       go(destination);refresh();
     }
@@ -234,6 +235,8 @@ public class MainActivity extends ComponentActivity {
     else if(page.equals("stats"))drawExpenseStats();
     else if(page.equals("activity"))drawActivity();
     else if(page.equals("reversals"))drawReversals();
+    else if(page.equals("debts"))drawDebts();
+    else if(page.equals("debtform"))drawDebtForm();
     else if(page.equals("settings"))drawSettings();
     bottomBar(root);
   }
@@ -279,8 +282,8 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void showMenu(){
-    final String[] labels={"Головна","Операції","Учасники","Звіти","Статистика витрат","Чеки витрат","Запитання","Сторнування","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
-    final String[] targets={"home","history","users","reports","stats","receipts","questions","reversals","queue","votes","activity","refresh","settings","web","logout"};
+    final String[] labels={"Головна","Операції","Учасники","Звіти","Статистика витрат","Чеки витрат","Запитання","Борги / Відшкодування","Сторнування","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
+    final String[] targets={"home","history","users","reports","stats","receipts","questions","debts","reversals","queue","votes","activity","refresh","settings","web","logout"};
     new AlertDialog.Builder(this).setTitle("ОБЩАК · Меню")
       .setItems(labels,(dialog,which)->{
         String target=targets[which];
@@ -560,6 +563,22 @@ public class MainActivity extends ComponentActivity {
       button(actions,"＋ Новий прихід",()->{formKind="IN";go("form");},true);
       button(actions,"− Нова витрата",()->{formKind="OUT";go("form");},true);
     }
+    int outstandingDebts=0;long owedCents=0;
+    JSONArray claims=state.optJSONArray("reimbursements");
+    if(claims!=null)for(int i=0;i<claims.length();i++){
+      JSONObject r=claims.optJSONObject(i);if(r==null)continue;
+      String status=r.optString("status");
+      if(status.equals("REQUESTED")||status.equals("APPROVED")){
+        outstandingDebts++;owedCents+=r.optLong("amount");
+      }
+    }
+    LinearLayout debtsCard=card(screen);
+    debtsCard.setBackground(background(0xffedf5ff,14));
+    textInto(debtsCard,"Борги / Відшкодування",15,NAVY,true);
+    textInto(debtsCard,outstandingDebts+" невиплачених заявок · "+money(owedCents)+" ₴",
+      13,TEAL,true);
+    textInto(debtsCard,"Борг ще не зменшує залишок каси",11,MUTED,false);
+    debtsCard.setOnClickListener(v->go("debts"));
 
     LinearLayout head=row();screen.addView(head);
     TextView caption=text("Операції за "+monthTitle().toLowerCase(new Locale("uk","UA"))+
@@ -1078,6 +1097,14 @@ public class MainActivity extends ComponentActivity {
   private void rememberPhoto(){getPreferences(MODE_PRIVATE).edit().putString("camera_path",cameraTempPath).putString("photo_target",receiptForLedger).apply();}
   private void savedReceipt(Uri uri,String mime) throws Exception {
     ImageStore.Receipt r=ImageStore.capture(this,uri,mime);
+    if("DEBT_DRAFT".equals(receiptForLedger)){
+      JSONObject draft=settings.getDraft("DEBT");
+      draft.put("file",r.info);settings.saveDraft("DEBT",draft);
+      receiptForLedger="";rememberPhoto();
+      if(page.equals("debtform"))draw();
+      message("✓ Чек відшкодування збережено на телефоні.");
+      return;
+    }
     if(!receiptForLedger.isEmpty()){
       JSONObject payload=new JSONObject();JSONArray files=new JSONArray();files.put(r.info);payload.put("files",files);
       outbox.addReceiptOnly(UUID.randomUUID().toString(),settings.userId(),receiptForLedger,payload);
@@ -1096,11 +1123,14 @@ public class MainActivity extends ComponentActivity {
     button(screen,"⟳ Спробувати синхронізувати",()->{
       if(secure.deviceToken().isEmpty()){registerDeviceKey();return;}
       outbox.resumeAuth(settings.userId());outbox.resumeCommentAuth(settings.userId());
+      outbox.resumeReimbursementAuth(settings.userId());
       QueueSyncWorker.schedule(this);message("Передачу заплановано за наявності мережі");
     },true);
     button(screen,"🔑 Оновити дозвіл фонової синхронізації",this::registerDeviceKey,false);
     java.util.List<LocalStore.Entry> list=outbox.list(settings.userId(),true);
-    if(list.isEmpty() && outbox.comments(settings.userId(),true).isEmpty())textInto(screen,"Локальних записів ще немає",15,MUTED,false);
+    if(list.isEmpty() && outbox.comments(settings.userId(),true).isEmpty()
+      && outbox.reimbursements(settings.userId(),true).isEmpty())
+      textInto(screen,"Локальних записів ще немає",15,MUTED,false);
     for(LocalStore.Entry e:list){
       LinearLayout box=card(screen);JSONObject tx=e.body().optJSONObject("tx");
       String title=tx==null?"📎 Чек до попередньої витрати":tx.optString("kind").equals("IN")?"Прихід":"Розхід";
@@ -1112,6 +1142,21 @@ public class MainActivity extends ComponentActivity {
       JSONArray photos=e.body().optJSONArray("files");if(photos!=null){textInto(box,"Прикріплених файлів: "+photos.length(),12,MUTED,false);
         if(photos.length()>0){JSONObject f=photos.optJSONObject(0);
           button(box,"Переглянути збережений чек",()->openLocal(f),false);}}
+    }
+    for(LocalStore.ReimbursementJob job:outbox.reimbursements(settings.userId(),true)){
+      LinearLayout c=card(screen);
+      textInto(c,"Борг / заявка: "+job.body().optString("purpose"),14,NAVY,true);
+      textInto(c,"Статус: "+labelStatus(job.status),12,LocalStore.SYNCED.equals(job.status)?TEAL:MUTED,true);
+      if(job.error!=null&&!job.error.isEmpty())textInto(c,job.error,12,0xffaa513a,false);
+      JSONObject file=job.body().optJSONObject("file");
+      if(file!=null)button(c,"📎 Переглянути чек",()->openLocal(file),false);
+      if(LocalStore.FAILED.equals(job.status)||LocalStore.AUTH.equals(job.status))
+        button(c,"Повторити відправлення",()->{
+          outbox.retryReimbursement(job.id);
+          if(secure.deviceToken().isEmpty())registerDeviceKey();
+          else QueueSyncWorker.schedule(this);
+          draw();
+        },false);
     }
     for(LocalStore.PendingComment c:outbox.comments(settings.userId(),true)){
       LinearLayout box=card(screen);
@@ -1851,6 +1896,263 @@ public class MainActivity extends ComponentActivity {
     }
   }
 
+  private void saveDebtDraft(){
+    if(!page.equals("debtform"))return;
+    JSONObject draft=settings.getDraft("DEBT");
+    try{
+      if(debtAmountInput!=null)draft.put("amount",debtAmountInput.getText().toString());
+      if(debtPurposeInput!=null)draft.put("purpose",debtPurposeInput.getText().toString());
+      if(debtCategoryInput!=null)draft.put("category",debtCategoryInput.getText().toString());
+      settings.saveDraft("DEBT",draft);
+    }catch(Exception ignored){}
+  }
+  private void drawDebtForm(){
+    JSONObject draft=settings.getDraft("DEBT");
+    debtAmountInput=null;debtPurposeInput=null;debtCategoryInput=null;
+    textInto(screen,"Подати заявку на відшкодування",22,NAVY,true);
+    textInto(screen,"Купили щось за власні гроші для спільних потреб? Збережіть чек і подайте заявку касиру.",
+      13,MUTED,false);
+    debtAmountInput=input(screen,"Сума, ₴ *",draft.optString("amount"),false);
+    debtAmountInput.setTextSize(24);
+    debtPurposeInput=input(screen,"Що придбано *",draft.optString("purpose"),false);
+    textInto(screen,"Напрям покупки *",14,NAVY,true);
+    LinearLayout directions=row();screen.addView(directions);
+    final String[] target={draft.optString("expenseTarget")};
+    final String[] choices={"МП","ГМЕ 1","ГМЕ 2"};
+    ArrayList<TextView> opts=new ArrayList<>();
+    for(String label:choices){
+      TextView choice=text(label,15,NAVY,true);choice.setGravity(Gravity.CENTER);
+      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(49),1f);
+      lp.setMargins(dp(2),dp(4),dp(2),dp(4));directions.addView(choice,lp);
+      opts.add(choice);
+    }
+    Runnable redraw=()->{
+      for(int i=0;i<opts.size();i++){
+        boolean checked=choices[i].equals(target[0]);
+        opts.get(i).setBackground(background(checked?0xff087b64:Color.WHITE,12));
+        opts.get(i).setTextColor(checked?Color.WHITE:NAVY);
+      }
+    };
+    for(int i=0;i<opts.size();i++){
+      String val=choices[i];opts.get(i).setOnClickListener(v->{
+        saveDebtDraft();
+        target[0]=val;JSONObject d=settings.getDraft("DEBT");
+        try{d.put("expenseTarget",val);settings.saveDraft("DEBT",d);}catch(Exception ignored){}
+        redraw.run();
+      });
+    }
+    redraw.run();
+    debtCategoryInput=input(screen,"Категорія покупки *",
+      draft.optString("category",ExpenseCategoryPicker.last(this)),false);
+    button(screen,"▤ Вибрати категорію зі списку",()->
+      ExpenseCategoryPicker.show(this,debtCategoryInput.getText().toString(),
+        category->{debtCategoryInput.setText(category);saveDebtDraft();}),false);
+    textInto(screen,"Чек (обов'язково, фото або PDF до 2 МБ)",14,NAVY,true);
+    JSONObject file=draft.optJSONObject("file");
+    if(file!=null){
+      textInto(screen,"📎 "+file.optString("name","Чек збережено"),13,TEAL,true);
+      button(screen,"Переглянути чек",()->openLocal(file),false);
+    }else textInto(screen,"Чек ще не прикріплений",12,0xff956200,true);
+    LinearLayout attachments=row();screen.addView(attachments);
+    button(attachments,"📷 Камера",()->{saveDebtDraft();takePhoto("DEBT_DRAFT");},false);
+    button(attachments,"📎 Галерея / PDF",()->{saveDebtDraft();pickPhoto("DEBT_DRAFT");},false);
+    button(screen,"✓ Подати заявку",()->submitDebtDraft(),true);
+    textInto(screen,"Заявка одразу збережеться на телефоні та синхронізується у фоні. Сама заявка не списує гроші з каси.",
+      12,MUTED,false);
+  }
+  private void submitDebtDraft(){
+    saveDebtDraft();
+    JSONObject d=settings.getDraft("DEBT");
+    String amount=d.optString("amount").trim();
+    if(CashLedgerPreview.asCents(amount)<=0){
+      message("Введіть додатну суму відшкодування");return;
+    }
+    if(d.optString("purpose").trim().isEmpty()||d.optString("category").trim().isEmpty()){
+      message("Заповніть опис і категорію");return;
+    }
+    if(!java.util.Arrays.asList("МП","ГМЕ 1","ГМЕ 2").contains(d.optString("expenseTarget"))){
+      message("Оберіть напрям покупки");return;
+    }
+    JSONObject file=d.optJSONObject("file");
+    if(file==null||file.optString("uploadPath").isEmpty()){
+      message("Прикріпіть чек до заявки");return;
+    }
+    if(!new File(file.optString("uploadPath")).exists()){
+      message("Локальний чек не знайдено. Додайте його знову.");return;
+    }
+    try{
+      String id=UUID.randomUUID().toString();
+      outbox.addReimbursement(id,settings.userId(),d);
+      settings.clearDraft("DEBT");
+      debtAmountInput=null;debtPurposeInput=null;debtCategoryInput=null;
+      go("debts");
+      if(secure.deviceToken().isEmpty())registerDeviceKey();
+      else QueueSyncWorker.schedule(this);
+      message("✓ Заявка з чеком збережена на телефоні. Надсилання — у фоні.");
+    }catch(Exception error){message("Не вдалося зберегти заявку: "+error.getMessage());}
+  }
+  private String debtStatusLabel(String status){
+    if(status.equals("REQUESTED"))return "Очікує погодження касира";
+    if(status.equals("APPROVED"))return "Касир погодив · очікує виплати";
+    if(status.equals("PAID_PENDING_CONFIRMATION"))
+      return "Касир позначив виплату · очікує отримувача";
+    if(status.equals("CONFIRMED"))return "✓ Отримувач підтвердив гроші";
+    if(status.equals("PAYMENT_DISPUTED"))return "⚠ Отримувач не підтверджує виплату";
+    if(status.equals("REJECTED"))return "Заявку відхилено";
+    return "⟳ На синхронізації";
+  }
+  private void debtAction(String action,String id,JSONObject values,String question){
+    new AlertDialog.Builder(this).setTitle("Відшкодування")
+      .setMessage(question).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Підтвердити",(dlg,which)->
+        remote(action,values,secure.token(),result->{
+          message("Дію записано, її бачать усі учасники");refresh();
+        })).show();
+  }
+  private JSONObject debtArgs(String id,String key,String value){
+    JSONObject result=new JSONObject();
+    try{result.put("id",id);result.put(key,value);}catch(Exception ignored){}
+    return result;
+  }
+  private void drawDebts(){
+    textInto(screen,"Борги / Відшкодування",22,NAVY,true);
+    textInto(screen,"Усі учасники бачать заявки, чеки, погодження, виплату й підтвердження отримання.",
+      12,MUTED,false);
+    button(screen,"＋ Подати заявку з чеком",()->go("debtform"),true);
+    JSONArray remote=state.optJSONArray("reimbursements");
+    int pending=0,unconfirmed=0;long total=0;
+    HashSet<String> serverIds=new HashSet<>();
+    if(remote!=null)for(int i=0;i<remote.length();i++){
+      JSONObject d=remote.optJSONObject(i);if(d==null)continue;
+      serverIds.add(d.optString("id"));
+      if(d.optString("status").equals("REQUESTED")||d.optString("status").equals("APPROVED")){
+        pending++;total+=d.optLong("amount");
+      }else if(d.optString("status").equals("PAID_PENDING_CONFIRMATION")||
+               d.optString("status").equals("PAYMENT_DISPUTED"))unconfirmed++;
+    }
+    LinearLayout summary=card(screen);
+    summary.setBackground(background(0xffe9f4ff,15));
+    textInto(summary,"Борг, який ще не виплачено",14,MUTED,true);
+    textInto(summary,money(total)+" ₴",25,NAVY,true);
+    textInto(summary,pending+" заявок · "+unconfirmed+" виплат очікують підтвердження",12,TEAL,true);
+    textInto(summary,"Заявки не списують гроші; виплата списується один раз.",11,MUTED,false);
+    for(LocalStore.ReimbursementJob job:outbox.reimbursements(settings.userId(),true)){
+      if(serverIds.contains(job.id))continue;
+      if(LocalStore.SYNCED.equals(job.status))continue;
+      LinearLayout local=card(screen);
+      local.setBackground(background(0xfffff3d7,12));
+      textInto(local,"⟳ "+job.body().optString("purpose")+" · "+
+        job.body().optString("amount")+" ₴",14,NAVY,true);
+      textInto(local,"На телефоні: "+labelStatus(job.status),12,0xff906600,true);
+      if(job.error!=null&&!job.error.isEmpty())textInto(local,job.error,12,0xffb04e44,false);
+      JSONObject file=job.body().optJSONObject("file");
+      if(file!=null)button(local,"📎 Чек",()->openLocal(file),false);
+      if(LocalStore.FAILED.equals(job.status)||LocalStore.AUTH.equals(job.status))
+        button(local,"Повторити синхронізацію",()->{
+          outbox.retryReimbursement(job.id);QueueSyncWorker.schedule(this);draw();
+        },false);
+    }
+    if(remote==null||remote.length()==0){
+      textInto(screen,"Спільних заявок у Google поки немає",13,MUTED,false);return;
+    }
+    for(int i=0;i<remote.length();i++){
+      JSONObject claim=remote.optJSONObject(i);if(claim==null)continue;
+      LinearLayout box=card(screen);
+      String status=claim.optString("status");
+      if(status.equals("PAYMENT_DISPUTED"))
+        box.setBackground(background(0xffffe9e7,13));
+      else if(status.equals("REQUESTED"))
+        box.setBackground(background(0xfffff5e2,13));
+      textInto(box,nameOf(claim.optString("requester_id"))+" · "+
+        money(claim.optLong("amount"))+" ₴",17,NAVY,true);
+      textInto(box,claim.optString("purpose")+" · "+claim.optString("category"),
+        13,MUTED,false);
+      textInto(box,claim.optString("expense_target")+" · "+debtStatusLabel(status),
+        12,status.equals("PAYMENT_DISPUTED")?0xffb14545:TEAL,true);
+      button(box,"Деталі · чек · обговорення",()->showDebtDetail(claim),false);
+    }
+  }
+  private void showDebtDetail(JSONObject claim){
+    String id=claim.optString("id"),status=claim.optString("status");
+    LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);
+    content.setPadding(dp(15),dp(10),dp(15),dp(12));
+    textInto(content,claim.optString("purpose"),19,NAVY,true);
+    textInto(content,money(claim.optLong("amount"))+" ₴ · "+
+      nameOf(claim.optString("requester_id")),17,TEAL,true);
+    textInto(content,claim.optString("expense_target")+" · "+
+      claim.optString("category"),13,MUTED,false);
+    textInto(content,debtStatusLabel(status),14,NAVY,true);
+    textInto(content,"Подано: "+claim.optString("created_at"),12,MUTED,false);
+    button(content,"📎 Переглянути чек",()->fetchReceipt(claim.optString("receipt_id")),false);
+    if(!claim.optString("approved_by").isEmpty())
+      textInto(content,"Погодив: "+nameOf(claim.optString("approved_by"))+
+        " · "+claim.optString("approved_at"),12,MUTED,false);
+    if(!claim.optString("paid_by").isEmpty())
+      textInto(content,"Виплату зазначив: "+nameOf(claim.optString("paid_by"))+
+        " · "+claim.optString("paid_at"),12,MUTED,false);
+    if(!claim.optString("confirmed_by").isEmpty())
+      textInto(content,"Отримання підтвердив: "+nameOf(claim.optString("confirmed_by"))+
+        " · "+claim.optString("confirmed_at"),12,TEAL,true);
+    if(!claim.optString("rejection_reason").isEmpty())
+      textInto(content,"Причина відхилення: "+claim.optString("rejection_reason"),
+        13,0xffa54817,true);
+    if(!claim.optString("dispute_reason").isEmpty())
+      textInto(content,"Заперечення отримувача: "+claim.optString("dispute_reason"),
+        13,0xffaa4545,true);
+    if(!claim.optString("ledger_id").isEmpty())
+      textInto(content,"Витрата каси: "+claim.optString("ledger_id"),11,MUTED,false);
+    if(isCashier()&&status.equals("REQUESTED")&&!settings.userId().equals(claim.optString("requester_id"))){
+      button(content,"✓ Погодити борг",()->debtAction("decideReimbursement",id,
+        debtArgs(id,"decision","APPROVE"),"Погодити борг? Каса поки не списується."),true);
+      button(content,"Відхилити заявку",()->prompt("Причина відхилення",reason->{
+        JSONObject args=debtArgs(id,"decision","REJECT");
+        try{args.put("reason",reason);}catch(Exception ignored){}
+        debtAction("decideReimbursement",id,args,"Відхилити заявку? Причину побачать усі.");
+      }),false);
+    }
+    if(isCashier()&&status.equals("APPROVED")&&!settings.userId().equals(claim.optString("requester_id"))){
+      button(content,"₴ Повернув гроші учаснику",()->debtAction("payReimbursement",id,
+        debtArgs(id,"id",id),
+        "Підтвердіть фактичну передачу грошей. Це створить одну витрату каси, а учасник підтвердить отримання."),true);
+    }
+    if(settings.userId().equals(claim.optString("requester_id"))&&
+       (status.equals("PAID_PENDING_CONFIRMATION")||status.equals("PAYMENT_DISPUTED"))){
+      button(content,"✓ Гроші отримав",()->debtAction("confirmReimbursement",id,
+        debtArgs(id,"received","YES"),"Підтверджуєте отримання всіх грошей?"),true);
+      if(status.equals("PAID_PENDING_CONFIRMATION"))
+        button(content,"⚠ Гроші не отримав",()->prompt("Опишіть розбіжність",reason->{
+          JSONObject args=debtArgs(id,"received","NO");
+          try{args.put("reason",reason);}catch(Exception ignored){}
+          debtAction("confirmReimbursement",id,args,"Записати заперечення виплати? Його побачать усі.");
+        }),false);
+    }
+    textInto(content,"Обговорення заявки · видно всім",15,NAVY,true);
+    JSONArray messages=state.optJSONArray("reimbursementComments");
+    if(messages!=null)for(int i=messages.length()-1;i>=0;i--){
+      JSONObject c=messages.optJSONObject(i);
+      if(c==null||!id.equals(c.optString("claim_id")))continue;
+      LinearLayout line=card(content);
+      textInto(line,nameOf(c.optString("author_id")),12,TEAL,true);
+      textInto(line,c.optString("message"),14,NAVY,false);
+      textInto(line,c.optString("created_at"),11,MUTED,false);
+    }
+    EditText comment=input(content,"Ваш коментар","",false);
+    comment.setSingleLine(false);comment.setMinLines(2);
+    button(content,"➤ Надіслати коментар",()->{
+      String value=comment.getText().toString().trim();
+      if(value.isEmpty()){comment.setError("Введіть повідомлення");return;}
+      JSONObject payload=debtArgs(id,"message",value);
+      try{payload.put("clientId",UUID.randomUUID().toString());}catch(Exception ignored){}
+      remote("commentReimbursement",payload,secure.token(),r->{
+        comment.setText("");message("Коментар опубліковано");refresh();
+      });
+    },false);
+    ScrollView scroll=new ScrollView(this);scroll.addView(content);
+    AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Відшкодування")
+      .setView(scroll).setPositiveButton("Закрити",null).create();
+    dialog.show();
+  }
+
   private void drawActivity(){
     textInto(screen,"Останні події",23,NAVY,true);
     JSONArray events=state.optJSONArray("events");if(events!=null)for(int i=0;i<Math.min(50,events.length());i++){
@@ -1886,7 +2188,7 @@ public class MainActivity extends ComponentActivity {
       if(changed)getPreferences(MODE_PRIVATE).edit().putString("last_state",nextState).apply();
       if(!before.isEmpty()&&!before.equals(after))message("Є нові події в ОБЩАКУ. Перевірте активність.");
       JSONObject user=state.optJSONObject("me");if(user!=null)settings.user(user);
-      if(changed&&(page.equals("home")||page.equals("history")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity")))draw();
+      if(changed&&(page.equals("home")||page.equals("history")||page.equals("debts")||page.equals("receipts")||page.equals("questions")||page.equals("users")||page.equals("votes")||page.equals("activity")))draw();
       if(secure.deviceToken().isEmpty())registerDeviceKey();
     });
   }
