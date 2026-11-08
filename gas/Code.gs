@@ -1467,6 +1467,12 @@ function renewFirstAdminCode() {
  * First press is a warning only; repeat within 5 minutes to execute.
  */
 function initializeObshchak(){
+  // Visible editor function, but it must NOT be callable by ordinary web-app
+  // visitors via google.script.run (which can invoke public functions).
+  var activeEmail=String(Session.getActiveUser().getEmail()||'').trim().toLowerCase();
+  var ownerEmail=String(Session.getEffectiveUser().getEmail()||'').trim().toLowerCase();
+  if(!activeEmail||!ownerEmail||activeEmail!==ownerEmail)
+    throw new Error('Очищення може виконати лише власник проєкту безпосередньо з редактора Apps Script.');
   var props=PropertiesService.getScriptProperties();
   if(!props.getProperty('SHEET_ID')){
     setupOwner_();
