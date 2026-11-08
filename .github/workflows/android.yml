@@ -28,6 +28,10 @@ jobs:
         working-directory: android
         env:
           OBSHCHAK_SCRIPT_URL: ${{ secrets.OBSHCHAK_SCRIPT_URL }}
+          OBSHCHAK_FCM_APP_ID: ${{ secrets.OBSHCHAK_FCM_APP_ID }}
+          OBSHCHAK_FCM_API_KEY: ${{ secrets.OBSHCHAK_FCM_API_KEY }}
+          OBSHCHAK_FCM_PROJECT_ID: ${{ secrets.OBSHCHAK_FCM_PROJECT_ID }}
+          OBSHCHAK_FCM_SENDER_ID: ${{ secrets.OBSHCHAK_FCM_SENDER_ID }}
         run: |
           gradle --no-daemon assembleDebug
       - name: Upload installable debug APK
