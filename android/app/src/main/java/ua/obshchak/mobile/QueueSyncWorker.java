@@ -1,6 +1,7 @@
 package ua.obshchak.mobile;
 
 import android.content.Context;
+import android.os.Build;
 import android.util.Base64;
 import androidx.annotation.NonNull;
 import androidx.work.BackoffPolicy;
@@ -24,10 +25,14 @@ public class QueueSyncWorker extends Worker {
   public QueueSyncWorker(@NonNull Context ctx,@NonNull WorkerParameters params){super(ctx,params);}
   static void schedule(Context c){
     Constraints constraints=new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
-    OneTimeWorkRequest request=new OneTimeWorkRequest.Builder(QueueSyncWorker.class)
+    OneTimeWorkRequest.Builder builder=new OneTimeWorkRequest.Builder(QueueSyncWorker.class)
         .setConstraints(constraints)
-        .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS);
+    // Android 12+: priority execution. Android 11 and below: standard reliable
+    // WorkManager scheduling, without requiring a foreground-service notification.
+    if(Build.VERSION.SDK_INT>=31)
+      builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST);
+    OneTimeWorkRequest request=builder.build();
     WorkManager.getInstance(c).enqueueUniqueWork("obshchak_sync",ExistingWorkPolicy.APPEND_OR_REPLACE,request);
   }
   @NonNull @Override public Result doWork(){
