@@ -491,6 +491,9 @@ function addTransaction_(user,data){
     else personName=needed_(data.personName,'Хто вніс гроші',100);
   } else if(kind==='OUT'){
     category=needed_(data.category,'Категорія витрати',80);
+    // Optional for compatibility with old Android/web clients.
+    method=String(data.method||'');
+    if(method && ['CASH','BANK'].indexOf(method)<0)throw new Error('Невірний спосіб оплати витрати');
     noReason=text_(data.noReceiptReason,500);
   } else throw new Error('Виберіть прихід або розхід');
   var r=kind==='OUT'?validReceipt_(data.receipt):null;
