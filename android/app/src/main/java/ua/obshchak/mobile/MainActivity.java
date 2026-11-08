@@ -587,8 +587,8 @@ public class MainActivity extends ComponentActivity {
     String purpose=row.tx.optString("purpose");
     textInto(detail,purpose.isEmpty()?"Операція":purpose,14,NAVY,true);
     textInto(detail,displayDate(row.tx.optString("date")),13,NAVY,true);
-    String extra=row.isLocal()?row.tx.optString("category"):
-        row.tx.optString("person_name",row.tx.optString("category"));
+    String extra=row.isLocal()?row.tx.optString("personName"):row.tx.optString("person_name");
+    if(extra.isEmpty())extra=row.tx.optString("category");
     if(!extra.isEmpty())textInto(detail,extra,11,MUTED,false);
     if(row.isLocal()){
       textInto(detail,localTransactionStatus(row.local),12,
