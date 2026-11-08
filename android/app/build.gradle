@@ -19,7 +19,7 @@ if ([fcmAppId,fcmApiKey,fcmProject,fcmSender].any { it && !(it ==~ /[A-Za-z0-9:.
 android {
     namespace 'ua.obshchak.mobile'
     compileSdk 35
-    defaultConfig { applicationId 'ua.obshchak.mobile'; minSdk 26; targetSdk 34; versionCode 19; versionName '4.6'; buildConfigField 'String', 'DEFAULT_SERVER_URL', '"' + defaultServerUrl + '"' }
+    defaultConfig { applicationId 'ua.obshchak.mobile'; minSdk 26; targetSdk 34; versionCode 20; versionName '4.7-debts'; buildConfigField 'String', 'DEFAULT_SERVER_URL', '"' + defaultServerUrl + '"' }
     buildFeatures { buildConfig true }
     defaultConfig {
         buildConfigField 'String', 'FCM_APP_ID', '"'+fcmAppId+'"'
