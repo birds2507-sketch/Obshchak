@@ -43,7 +43,13 @@ function doPost(e) {
     if (!packet || typeof packet.action !== 'string') throw new Error('Не вказана дія');
     // Login does not require token; all other calls pass through existing auth_ and role checks.
     var result;
-    if(packet.action==='registerPush' || packet.action==='unregisterPush'){
+    if(packet.action==='medproReadState'){
+      result=medproReadState_(String(packet.token||''));
+    } else if(packet.action==='medproReadReceipt'){
+      result=medproReadReceipt_(String(packet.token||''),packet.data||{});
+    } else if(packet.action==='medproReadRevoke'){
+      result=medproReadRevoke_(String(packet.token||''));
+    } else if(packet.action==='registerPush' || packet.action==='unregisterPush'){
       // Device-scoped authorization: a member may register only their own device.
       var pushUser=authDevice_(String(packet.token||''));
       result=withLock_(function(){return packet.action==='registerPush' ?
@@ -196,6 +202,7 @@ function api(action, data, token) {
   if (user.must_change === '1') throw new Error('Спочатку встановіть власний пароль.');
   switch (action) {
     case 'state': return state_(user);
+    case 'medproReadRegister': return withLock_(function(){return medproGrantRead_(user);});
     case 'registerDevice': return withLock_(function(){return registerDevice_(user,data);});
     case 'addTransaction': return withLock_(function(){return addTransaction_(user,data);});
     case 'openingBalance': return withLock_(function(){return openingBalance_(user,data);});
