@@ -1451,7 +1451,7 @@ function money_(c){var n=Number(c)/100;return n.toFixed(2).replace('.',',');}
  * RUN MANUALLY ONLY after making sure all local test queues are settled.
  */
 function resetObshchakForCleanStart() {
-  return resetObshchakForCleanStart_();
+  return initializeObshchak();
 }
 
 /** Editor-only recovery if the first admin code expired. Does not reset data. */
@@ -1459,6 +1459,72 @@ function renewFirstAdminCode() {
   return renewFirstAdminCode_();
 }
 
-function initializeObshchak() {
-  setupOwner_();
+/**
+ * The existing visible editor command now serves as a SAFE two-run clear.
+ * It deletes test rows from the current live Spreadsheet (not an archive),
+ * moves files in the active receipts folder into Drive trash, and resets
+ * every account. It does NOT run from the public web/API.
+ * First press is a warning only; repeat within 5 minutes to execute.
+ */
+function initializeObshchak(){
+  var props=PropertiesService.getScriptProperties();
+  if(!props.getProperty('SHEET_ID')){
+    setupOwner_();
+    Logger.log('Створено нову базу. Зареєструйте першого адміністратора.');
+    return;
+  }
+  var until=Number(props.getProperty('CLEAR_ALL_CONFIRM_UNTIL')||0);
+  if(Date.now()>until){
+    props.setProperty('CLEAR_ALL_CONFIRM_UNTIL',String(Date.now()+5*60*1000));
+    Logger.log('⚠ УВАГА! ЦЕ ВИДАЛИТЬ УСІ ЖУРНАЛИ, КОРИСТУВАЧІВ, ПАРОЛІ ТА ТЕСТОВІ ЧЕКИ з поточної бази ОБЩАК.');
+    Logger.log('ЦЕ НЕ АРХІВАЦІЯ. Очищення незворотне з інтерфейсу програми.');
+    Logger.log('Якщо дійсно бажаєте очистити ВСЕ, знову запустіть initializeObshchak протягом 5 хвилин.');
+    return {confirmationRequired:true};
+  }
+  props.deleteProperty('CLEAR_ALL_CONFIRM_UNTIL');
+  return withLock_(function(){
+    var spreadsheet=SpreadsheetApp.openById(props.getProperty('SHEET_ID'));
+    var expected=Object.keys(CFG_.HEADERS);
+    // Prevent accidental mutation of a wrong or incomplete table.
+    ['Users','Ledger','Receipts'].forEach(function(name){
+      if(!spreadsheet.getSheetByName(name))
+        throw new Error('Не знайдено обов’язковий аркуш '+name+'. Очищення скасовано.');
+    });
+    var wiped=[];
+    expected.forEach(function(name){
+      var sheet=spreadsheet.getSheetByName(name);
+      if(!sheet)return;
+      var last=sheet.getLastRow(),count=Math.max(0,last-1);
+      if(count>0)sheet.deleteRows(2,count);
+      wiped.push(name+': '+count);
+    });
+    SpreadsheetApp.flush();
+    var removedFiles=0,folderId=props.getProperty('RECEIPT_FOLDER_ID');
+    if(folderId){
+      try{
+        var fileIterator=DriveApp.getFolderById(folderId).getFiles();
+        while(fileIterator.hasNext()){
+          fileIterator.next().setTrashed(true);
+          removedFiles++;
+        }
+      }catch(err){
+        Logger.log('Увага: не всі файли чеків перенесено в кошик Google Drive: %s',String(err.message||err));
+      }
+    }
+    // Invalidate all old login/device credentials by rotating the PEPPER;
+    // Users and DeviceTokens have already been erased.
+    props.setProperties({
+      PEPPER:Utilities.getUuid()+Utilities.getUuid(),
+      DB_GENERATION:Utilities.getUuid()
+    });
+    props.deleteProperty('FIRST_ADMIN_CODE_HASH');
+    props.deleteProperty('FIRST_ADMIN_CODE_UNTIL');
+    issueFirstAdminCode_(props);
+    Logger.log('✅ ОЧИЩЕНО: %s',wiped.join('; '));
+    Logger.log('Файлів чеків переміщено в кошик: %s',removedFiles);
+    Logger.log('ТА САМА Google-таблиця, але всі журнали порожні: %s',spreadsheet.getUrl());
+    Logger.log('На всіх тестових телефонах потрібно очистити локальні дані та увійти заново.');
+    return {ok:true,cleared:wiped,receiptFilesTrashed:removedFiles,
+      databaseUrl:spreadsheet.getUrl(),needsAdmin:true};
+  });
 }
