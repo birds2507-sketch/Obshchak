@@ -38,6 +38,7 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.FileProvider;
@@ -49,6 +50,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Date;
 import java.time.YearMonth;
 import java.time.LocalDate;
@@ -76,6 +78,8 @@ public class MainActivity extends ComponentActivity {
   private ActivityResultLauncher<String> notificationPermissionLauncher;
   private boolean doingRequest=false;
   private String historyQuery="";
+  private String historyKind="ALL";
+  private final ArrayDeque<String> navigationHistory=new ArrayDeque<>();
   private boolean historyWithoutReceipt=false;
   private boolean historyForMonth=true;
   private EditText debtAmountInput,debtPurposeInput,debtCategoryInput;
@@ -128,6 +132,9 @@ public class MainActivity extends ComponentActivity {
         FirebaseBridge.register(this);
       }
     }
+    getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){
+      @Override public void handleOnBackPressed(){handleAppBack();}
+    });
     draw();
     observeSyncCompletion();
     if(!page.equals("login")){
@@ -224,6 +231,7 @@ public class MainActivity extends ComponentActivity {
       return;
     }
 
+    if(page.equals("votes")&&!state.optBoolean("electionsEnabled",true))page="home";
     if(page.equals("home"))drawHome();
     else if(page.equals("form"))drawForm();
     else if(page.equals("queue"))drawQueue();
@@ -231,6 +239,7 @@ public class MainActivity extends ComponentActivity {
     else if(page.equals("receipts"))drawReceipts();
     else if(page.equals("questions"))drawQuestions();
     else if(page.equals("users"))drawUsers();
+    else if(page.equals("mycontributions"))drawMyContributions();
     else if(page.equals("votes"))drawVotes();
     else if(page.equals("reports"))drawReports();
     else if(page.equals("stats"))drawExpenseStats();
@@ -283,17 +292,36 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void showMenu(){
-    final String[] labels={"Головна","Операції","Учасники","Звіти","Статистика витрат","Чеки витрат","Запитання","Борги / Відшкодування","Сторнування","Черга синхронізації","Вибори касира","Події та сповіщення","Оновити дані","Налаштування","Відкрити вебверсію","Вихід"};
-    final String[] targets={"home","history","users","reports","stats","receipts","questions","debts","reversals","queue","votes","activity","refresh","settings","web","logout"};
+    ArrayList<String> labels=new ArrayList<>(),targets=new ArrayList<>();
+    String[][] sections={
+      {"Головна","home"},{"Мій кабінет / Мої внески","mycontributions"},
+      {"Операції (усі)","history"},{"Доходи / внески","income"},
+      {"Витрати","expenses"},{"Учасники","users"},
+      {"Звіти","reports"},{"Статистика витрат","stats"},
+      {"Чеки витрат","receipts"},{"Запитання","questions"},
+      {"Борги / Відшкодування","debts"},{"Сторнування","reversals"},
+      {"Черга синхронізації","queue"}
+    };
+    for(String[] item:sections){labels.add(item[0]);targets.add(item[1]);}
+    if(state.optBoolean("electionsEnabled",true)){
+      labels.add("Вибори касира");targets.add("votes");
+    }
+    String[][] tail={
+      {"Події та сповіщення","activity"},{"Оновити дані","refresh"},
+      {"Налаштування","settings"},{"Відкрити вебверсію","web"},
+      {"Вихід з акаунта","logout"}
+    };
+    for(String[] item:tail){labels.add(item[0]);targets.add(item[1]);}
     new AlertDialog.Builder(this).setTitle("ОБЩАК · Меню")
-      .setItems(labels,(dialog,which)->{
-        String target=targets[which];
+      .setItems(labels.toArray(new String[0]),(dialog,which)->{
+        String target=targets.get(which);
         if(target.equals("logout")){logout();return;}
         if(target.equals("refresh")){refresh();return;}
+        if(target.equals("income")){showFilteredHistory("IN");return;}
+        if(target.equals("expenses")){showFilteredHistory("OUT");return;}
         if(target.equals("web")){
           try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(settings.url())));}
-          catch(Exception ex){message(ex.getMessage());}
-          return;
+          catch(Exception ex){message(ex.getMessage());}return;
         }
         go(target);
       }).show();
@@ -542,6 +570,13 @@ public class MainActivity extends ComponentActivity {
     number.setAutoSizeTextTypeUniformWithConfiguration(12,18,1,TextView.AUTO_SIZE_TEXT_TYPE_UNIFORM);
     box.addView(number,new LinearLayout.LayoutParams(-1,dp(30)));
     if(!subtitle.isEmpty())textInto(box,subtitle,10,MUTED,false);
+    if(label.contains("Прихід")){
+      box.setContentDescription("Переглянути лише доходи");
+      box.setOnClickListener(v->showFilteredHistory("IN"));
+    }else if(label.contains("Розхід")){
+      box.setContentDescription("Переглянути лише витрати");
+      box.setOnClickListener(v->showFilteredHistory("OUT"));
+    }
   }
 
   private void drawHome(){
@@ -2439,10 +2474,44 @@ public class MainActivity extends ComponentActivity {
     FirebaseBridge.unregister(this,secure.deviceToken());
     EventPollWorker.cancel(this);
     secure.clear();settings.clearUser();state=new JSONObject();getPreferences(MODE_PRIVATE).edit().remove("last_state").apply();
-    page="login";draw();
+    navigationHistory.clear();page="login";draw();
     pool.execute(()->{try{new ApiClient(this).call("logout",nothing,token);}catch(Exception ignored){}});
   }
-  private void go(String target){page=target;draw();}
+  private void go(String target){
+    if("votes".equals(target)&&!state.optBoolean("electionsEnabled",true))return;
+    if(!target.equals(page)){
+      if(navigationHistory.size()>=24)navigationHistory.removeFirst();
+      navigationHistory.addLast(page);
+    }
+    if("history".equals(target)&&!target.equals(page))historyKind="ALL";
+    page=target;draw();
+  }
+  private void showFilteredHistory(String kind){
+    if(!page.equals("history")){
+      if(navigationHistory.size()>=24)navigationHistory.removeFirst();
+      navigationHistory.addLast(page);
+    }
+    historyKind=kind;historyWithoutReceipt=false;historyQuery="";
+    page="history";draw();
+  }
+  private void handleAppBack(){
+    if(page.equals("login")){confirmExitApp();return;}
+    if(page.equals("password")){page="login";draw();return;}
+    while(!navigationHistory.isEmpty()){
+      String previous=navigationHistory.removeLast();
+      if(previous.equals(page)||("votes".equals(previous)&&!state.optBoolean("electionsEnabled",true)))
+        continue;
+      page=previous;draw();return;
+    }
+    if(!page.equals("home")){page="home";draw();return;}
+    confirmExitApp();
+  }
+  private void confirmExitApp(){
+    new AlertDialog.Builder(this).setTitle("Вийти з ОБЩАК?")
+      .setMessage("Закрити програму? Ваш обліковий запис залишиться підключеним. Для виходу з акаунта використовуйте пункт «Вийти».")
+      .setNegativeButton("Залишитися",null)
+      .setPositiveButton("Закрити програму",(d,w)->finish()).show();
+  }
   private static String today(){return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());}
   private static String money(long cents){return String.format(new Locale("uk","UA"),"%,.2f",cents/100.0);}
   private static String roleName(String role){return role.equals("CASHIER")?"Касир":(role.equals("ADMIN")||role.equals("RESERVE"))?"Адміністратор":"Учасник";}
