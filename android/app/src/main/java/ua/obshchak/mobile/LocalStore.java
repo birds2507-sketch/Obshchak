@@ -74,14 +74,16 @@ final class LocalStore extends SQLiteOpenHelper {
     }
     return rows;
   }
-  /** Lightweight list for the home screen: no years of already-synced history. */
+  /** Include ALL unsynced operations for mathematically correct provisional balances.
+   * Keep only the last 7 days of already-synced rows; older ones are in the Google ledger.
+   */
   List<Entry> recentTransactions(String owner){
     List<Entry> rows=new ArrayList<>();
     long cutoff=System.currentTimeMillis()-7L*24*60*60*1000;
     try(Cursor c=getReadableDatabase().rawQuery(
       "SELECT id,owner_id,payload,ledger_id,status,created_at,error FROM outbox "+
       "WHERE owner_id=? AND (status<>? OR created_at>=?) "+
-      "ORDER BY created_at DESC LIMIT 150",
+      "ORDER BY created_at DESC",
       new String[]{owner,SYNCED,String.valueOf(cutoff)})){
       while(c.moveToNext()){
         Entry e=new Entry();e.id=c.getString(0);e.owner=c.getString(1);
