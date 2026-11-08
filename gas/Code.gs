@@ -12,7 +12,7 @@ var CFG_ = {
   SESSION_SECONDS: 21600,
   HEADERS: {
     Users: ['id','login','name','role','salt','hash','must_change','active','created_at','version'],
-    Ledger: ['id','date','created_at','kind','amount','person_id','person_name','method','category','purpose','no_receipt_reason','correction_of','created_by'],
+    Ledger: ['id','date','created_at','kind','amount','person_id','person_name','method','category','purpose','no_receipt_reason','correction_of','created_by','expense_target'],
     Receipts: ['id','ledger_id','file_id','filename','mime','size','created_at','created_by'],
     Comments: ['id','ledger_id','author_id','message','created_at'],
     Elections: ['id','initiator','supporter','candidate_id','status','created_at','updated_at','book_balance','electorate','required_votes'],
@@ -182,7 +182,23 @@ function all_(name) {
     var o={}; head.forEach(function(h,i){o[h]=String(r[i]===undefined?'':r[i]);}); return o;
   });
 }
+function ensureExpenseTargetColumn_(){
+  // Existing Google Sheets keep their rows and current first 13 columns unchanged.
+  var sheet=sheet_('Ledger'),header=sheet.getRange(1,1,1,Math.max(13,sheet.getLastColumn())).getDisplayValues()[0];
+  if(header[13]==='expense_target')return;
+  if(header.indexOf('expense_target')>=0)
+    throw new Error('Колонку expense_target розміщено не на позиції 14; потрібна перевірка структури');
+  // Add at the end of the old core schema without overwriting manually added columns.
+  sheet.insertColumnAfter(13);
+  sheet.getRange(1,14).setValue('expense_target');
+  sheet.getRange(1,14).setFontWeight('bold').setBackground('#e2e8f0');
+}
 function append_(name, values) {
+  if(name==='Ledger'){
+    ensureExpenseTargetColumn_();
+    if(values.length===13)values=values.concat(['']);
+    if(values.length!==14)throw new Error('Неправильна довжина запису журналу');
+  }
   sheet_(name).appendRow(values.map(function(v){
     var s=String(v===null || v===undefined ? '' : v);
     return s.charAt(0)==='=' ? "'"+s : s;
@@ -531,7 +547,7 @@ function addTransaction_(user,data){
     }
   }
 
-  var kind=String(data.kind||''), cents=amount_(data.amount), d=date_(data.date), personId='',personName='',method='',category='',purpose=needed_(data.purpose,'Призначення',300),noReason='';
+  var kind=String(data.kind||''), cents=amount_(data.amount), d=date_(data.date), personId='',personName='',method='',category='',expenseTarget='',purpose=needed_(data.purpose,'Призначення',300),noReason='';
   if(kind==='IN') {
     // A single common balance: physical storage is the cashier's responsibility.
     method='';
@@ -540,6 +556,11 @@ function addTransaction_(user,data){
     else personName=needed_(data.personName,'Хто вніс гроші',100);
   } else if(kind==='OUT'){
     category=needed_(data.category,'Категорія витрати',80);
+    // Optional while earlier versions of the APK are still in use.
+    // A blank value is displayed as "Без напряму" in statistics.
+    expenseTarget=String(data.expenseTarget||data.expense_target||'').trim();
+    if(expenseTarget && ['МП','ГМЕ 1','ГМЕ 2'].indexOf(expenseTarget)<0)
+      throw new Error('Оберіть напрям витрати: МП, ГМЕ 1 або ГМЕ 2');
     // Ignore legacy card/cash details; all new expenses use one shared balance.
     method='';
     noReason=text_(data.noReceiptReason,500);
@@ -552,7 +573,7 @@ function addTransaction_(user,data){
   var file=null;
   if(r){var folder=DriveApp.getFolderById(PropertiesService.getScriptProperties().getProperty('RECEIPT_FOLDER_ID'));file=folder.createFile(Utilities.newBlob(r.bytes,r.mime,r.name));}
   try {
-    append_('Ledger',[id,d,now_(),kind,kind==='IN'?cents:-cents,personId,personName,method,category,purpose,noReason,'',user.id]);
+    append_('Ledger',[id,d,now_(),kind,kind==='IN'?cents:-cents,personId,personName,method,category,purpose,noReason,'',user.id,expenseTarget]);
     if(file)append_('Receipts',[Utilities.getUuid(),id,file.getId(),r.name,r.mime,String(r.bytes.length),now_(),user.id]);
   }catch(err){if(file)file.setTrashed(true);throw err;}
   var label=kind==='IN'?'Прихід':'Розхід';
@@ -568,7 +589,7 @@ function reverseTransaction_(user,data){
   if(!orig || ['IN','OUT'].indexOf(orig.kind)<0)throw new Error('Можна скасувати тільки первинну операцію');
   if(ledger.some(function(r){return r.kind==='REVERSAL'&&r.correction_of===id;}))throw new Error('Ця операція вже скасована');
   var revId=Utilities.getUuid();
-  append_('Ledger',[revId,today_(),now_(),'REVERSAL',String(-Number(orig.amount)),orig.person_id,orig.person_name,orig.method,orig.category,'Сторно: '+reason,'',id,user.id]);
+  append_('Ledger',[revId,today_(),now_(),'REVERSAL',String(-Number(orig.amount)),orig.person_id,orig.person_name,orig.method,orig.category,'Сторно: '+reason,'',id,user.id,orig.expense_target||'']);
   event_('CORRECTION','Коригування операції: '+orig.purpose,user.id,id);
   logAudit_(user.id,'REVERSE','Сторновано '+id+' через '+revId+': '+reason);
   return {ok:true,id:revId};
