@@ -900,6 +900,13 @@ public class MainActivity extends ComponentActivity {
     textInto(screen,title,13,MUTED,true);
     LinearLayout area=row();screen.addView(area,new LinearLayout.LayoutParams(-1,dp(61)));
     String[] selected={initial.equals("BANK")?"BANK":"CASH"};
+    // A remembered payment method must be persisted even if the cashier
+    // immediately saves without touching the method controls.
+    JSONObject selectionDraft=settings.getDraft(formKind);
+    if(!selectionDraft.has("method")){
+      try{selectionDraft.put("method",selected[0]);settings.saveDraft(formKind,selectionDraft);}
+      catch(Exception ignored){}
+    }
     TextView cash=text("▣ Готівка",14,NAVY,true);
     TextView bank=text("▤ Картка",14,NAVY,true);
     cash.setGravity(Gravity.CENTER);bank.setGravity(Gravity.CENTER);
