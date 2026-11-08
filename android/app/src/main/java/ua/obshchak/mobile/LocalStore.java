@@ -83,7 +83,7 @@ final class LocalStore extends SQLiteOpenHelper {
     try(Cursor c=getReadableDatabase().rawQuery(
       "SELECT id,owner_id,payload,ledger_id,status,created_at,error FROM outbox "+
       "WHERE owner_id=? AND (status<>? OR created_at>=?) "+
-      "ORDER BY created_at DESC",
+      "ORDER BY created_at DESC, rowid DESC",
       new String[]{owner,SYNCED,String.valueOf(cutoff)})){
       while(c.moveToNext()){
         Entry e=new Entry();e.id=c.getString(0);e.owner=c.getString(1);
