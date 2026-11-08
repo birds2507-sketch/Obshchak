@@ -5,15 +5,33 @@ def defaultServerUrl = (System.getenv('OBSHCHAK_SCRIPT_URL') ?: 'https://script.
 if (defaultServerUrl && !(defaultServerUrl.startsWith('https://script.google.com/macros/s/') && defaultServerUrl.endsWith('/exec'))) {
     throw new GradleException('OBSHCHAK_SCRIPT_URL must be a Google Apps Script /exec URL')
 }
+// Firebase client identifiers are public configuration, NOT a server credential.
+// All fields remain empty until the owner configures GitHub Actions secrets.
+def fcmAppId=(System.getenv('OBSHCHAK_FCM_APP_ID') ?: '').trim()
+def fcmApiKey=(System.getenv('OBSHCHAK_FCM_API_KEY') ?: '').trim()
+def fcmProject=(System.getenv('OBSHCHAK_FCM_PROJECT_ID') ?: '').trim()
+def fcmSender=(System.getenv('OBSHCHAK_FCM_SENDER_ID') ?: '').trim()
+if ([fcmAppId,fcmApiKey,fcmProject,fcmSender].any { it } &&
+    ![fcmAppId,fcmApiKey,fcmProject,fcmSender].every { it })
+    throw new GradleException('All 4 OBSHCHAK_FCM_* configuration fields are required together')
+if ([fcmAppId,fcmApiKey,fcmProject,fcmSender].any { it && !(it ==~ /[A-Za-z0-9:._-]+/) })
+    throw new GradleException('Invalid Firebase client configuration value')
 android {
     namespace 'ua.obshchak.mobile'
     compileSdk 35
-    defaultConfig { applicationId 'ua.obshchak.mobile'; minSdk 26; targetSdk 34; versionCode 12; versionName '3.9-test'; buildConfigField 'String', 'DEFAULT_SERVER_URL', '"' + defaultServerUrl + '"' }
+    defaultConfig { applicationId 'ua.obshchak.mobile'; minSdk 26; targetSdk 34; versionCode 13; versionName '4.0-fcm'; buildConfigField 'String', 'DEFAULT_SERVER_URL', '"' + defaultServerUrl + '"' }
     buildFeatures { buildConfig true }
+    defaultConfig {
+        buildConfigField 'String', 'FCM_APP_ID', '"'+fcmAppId+'"'
+        buildConfigField 'String', 'FCM_API_KEY', '"'+fcmApiKey+'"'
+        buildConfigField 'String', 'FCM_PROJECT_ID', '"'+fcmProject+'"'
+        buildConfigField 'String', 'FCM_SENDER_ID', '"'+fcmSender+'"'
+    }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     buildTypes { release { minifyEnabled false } }
 }
 dependencies {
     implementation 'androidx.activity:activity:1.9.3'
     implementation 'androidx.work:work-runtime:2.12.0'
+    implementation 'com.google.firebase:firebase-messaging:25.0.2'
 }
