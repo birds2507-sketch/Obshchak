@@ -81,6 +81,79 @@ function reversalFor(original){
   return (A.state.reversalRequests||[]).find(r=>r.original_id===original&&
     ['PENDING','DISPUTED','APPROVED'].includes(r.status));
 }
+
+function debtStatus(status){
+  return ({REQUESTED:'Очікує касира',APPROVED:'Погоджено · очікує виплати',
+    PAID_PENDING_CONFIRMATION:'Виплачено · очікує отримувача',
+    CONFIRMED:'✓ Гроші отримано',REJECTED:'Відхилено',
+    PAYMENT_DISPUTED:'⚠ Гроші не отримано'})[status]||status;
+}
+function debtsPage(){
+  const claims=A.state.reimbursements||[];
+  const comments=A.state.reimbursementComments||[];
+  const due=claims.filter(r=>['REQUESTED','APPROVED'].includes(r.status));
+  let html=`<div class="stack"><div class="headrow"><h1>Борги / Відшкодування</h1>
+    <span class="tag">${due.length} неоплачених</span></div>
+    <div class="card balance"><div class="small">Борг до виплати</div>
+      <div class="bigmoney">${euro(due.reduce((n,r)=>n+Number(r.amount),0))}</div>
+      <p class="tiny">Заявка не зменшує залишок. Лише фактична виплата створює одну витрату каси.</p>
+    </div>
+    <details class="card"><summary style="cursor:pointer;font-weight:700">＋ Подати заявку з чеком</summary>
+      <form id="debt-request" style="margin-top:14px">
+        <div class="rowform"><div class="field"><label>Сума, ₴ *</label>
+          <input class="input" name="amount" inputmode="decimal" required placeholder="Наприклад, 250,00"></div>
+          <div class="field"><label>Напрям *</label><select class="select" name="expenseTarget" required>
+            <option value="">Оберіть напрям</option><option>МП</option><option>ГМЕ 1</option><option>ГМЕ 2</option>
+          </select></div></div>
+        <div class="field"><label>Категорія *</label>
+          <input class="input" name="category" value="Господарські товари" maxlength="80" required></div>
+        <div class="field"><label>Що придбано *</label>
+          <textarea class="textarea" name="purpose" maxlength="300" required></textarea></div>
+        <div class="field"><label>Чек до 2 МБ *</label>
+          <input class="input" type="file" name="file" required accept="image/jpeg,image/png,image/webp,application/pdf"></div>
+        <button class="btn primary" type="submit">Подати заявку</button>
+      </form>
+    </details><div class="card"><h2>Усі заявки · видно всім</h2>`;
+  if(!claims.length)html+='<p class="empty">Заявок поки немає.</p>';
+  for(const r of claims){
+    const mine=r.requester_id===A.state.me.id;
+    const pending=r.status==='REQUESTED',approved=r.status==='APPROVED';
+    const awaiting=['PAID_PENDING_CONFIRMATION','PAYMENT_DISPUTED'].includes(r.status);
+    html+=`<details class="rowitem" style="display:block">
+      <summary style="cursor:pointer"><strong>${esc(nameOf(r.requester_id))} · ${euro(r.amount)}</strong>
+        <span class="tag">${esc(debtStatus(r.status))}</span>
+        <p class="small">${esc(r.purpose)} · ${esc(r.expense_target)} · ${esc(r.category)}</p></summary>
+      <div style="padding:10px 0">
+        <p class="tiny">Подано ${stamp(r.created_at)}</p>
+        <button class="btn sm outline" data-act="debt-receipt" data-id="${esc(r.receipt_id)}">📎 Переглянути чек</button>
+        ${r.approved_by?`<p class="tiny">Погодив: ${esc(nameOf(r.approved_by))} · ${stamp(r.approved_at)}</p>`:''}
+        ${r.paid_by?`<p class="tiny">Виплату зазначив: ${esc(nameOf(r.paid_by))} · ${stamp(r.paid_at)}</p>`:''}
+        ${r.confirmed_by?`<p class="status">Отримання підтвердив: ${esc(nameOf(r.confirmed_by))}</p>`:''}
+        ${r.rejection_reason?`<p class="status warn">Відмовлено: ${esc(r.rejection_reason)}</p>`:''}
+        ${r.dispute_reason?`<p class="status warn">⚠ Не отримав: ${esc(r.dispute_reason)}</p>`:''}
+        ${cashier()&&!mine&&pending?`
+          <button class="btn sm primary" data-act="debt-approve" data-id="${esc(r.id)}">✓ Погодити борг</button>
+          <button class="btn sm danger" data-act="debt-reject" data-id="${esc(r.id)}">Відхилити</button>`:''}
+        ${cashier()&&!mine&&approved?`
+          <button class="btn sm primary" data-act="debt-pay" data-id="${esc(r.id)}">₴ Гроші повернув</button>`:''}
+        ${mine&&awaiting?`
+          <button class="btn sm primary" data-act="debt-confirm" data-id="${esc(r.id)}">✓ Гроші отримав</button>
+          ${r.status==='PAID_PENDING_CONFIRMATION'?`
+          <button class="btn sm danger" data-act="debt-dispute" data-id="${esc(r.id)}">⚠ Не отримав</button>`:''}`:''}
+        <h3>Обговорення</h3>
+        ${comments.filter(c=>c.claim_id===r.id).reverse().map(c=>
+          `<div class="comment"><b>${esc(nameOf(c.author_id))}</b>
+            <span class="tiny">${stamp(c.created_at)}</span><p>${esc(c.message)}</p></div>`).join('')}
+        <form id="debt-comment">
+          <input type="hidden" name="id" value="${esc(r.id)}">
+          <textarea class="textarea" name="message" required maxlength="1500" placeholder="Поставити запитання"></textarea>
+          <button class="btn sm secondary" type="submit">Надіслати</button>
+        </form>
+      </div></details>`;
+  }
+  return html+'</div></div>';
+}
+
 function reversalsPage(){
   const list=A.state.reversalRequests||[];
   const waiting=list.filter(r=>r.status==='PENDING'||r.status==='DISPUTED').length;
