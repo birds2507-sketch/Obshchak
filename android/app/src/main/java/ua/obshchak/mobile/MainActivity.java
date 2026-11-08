@@ -1555,6 +1555,7 @@ public class MainActivity extends ComponentActivity {
         (u.optBoolean("active")?" · активний":" · заблокований"),
         12,u.optBoolean("active")?MUTED:0xffaf541c,false);
       if(!isAdmin())continue;
+      button(c,"✎ Змінити ім’я",()->showChangeNameDialog(target,name),false);
       button(c,"✎ Змінити логін",()->showChangeLoginDialog(target,name,u.optString("login")),false);
       if(settings.userId().equals(target)||role.equals("ADMIN")||role.equals("RESERVE"))continue;
       button(c,"🔑 Новий тимчасовий PIN / пароль",
@@ -1595,6 +1596,31 @@ public class MainActivity extends ComponentActivity {
     return pin;
   }
 
+  private void showChangeNameDialog(String id,String currentName){
+    if(!isAdmin())return;
+    LinearLayout pane=new LinearLayout(this);pane.setOrientation(LinearLayout.VERTICAL);
+    pane.setPadding(dp(17),dp(7),dp(17),dp(5));
+    textInto(pane,"Зміниться лише ім’я в профілі. Логін, PIN, ID та історія операцій залишаться.",
+      12,MUTED,false);
+    EditText name=input(pane,"Ім’я учасника",currentName,false);
+    new AlertDialog.Builder(this).setTitle("Змінити ім’я")
+      .setView(pane).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Зберегти",(d,w)->{
+        String desired=name.getText().toString().trim();
+        if(desired.isEmpty()||desired.length()>80){
+          message("Ім’я повинно містити від 1 до 80 символів");return;
+        }
+        JSONObject body=debtArgs(id,"name",desired);
+        remote("changeName",body,secure.token(),result->{
+          if(id.equals(settings.userId())){
+            JSONObject user=state.optJSONObject("me");
+            if(user!=null){try{user.put("name",desired);}catch(Exception ignored){}
+              settings.user(user);}
+          }
+          message("Ім’я змінено, історія збережена");refresh();
+        });
+      }).show();
+  }
   private void showChangeLoginDialog(String id,String name,String previous){
     if(!isAdmin())return;
     LinearLayout pane=new LinearLayout(this);pane.setOrientation(LinearLayout.VERTICAL);
@@ -1751,8 +1777,38 @@ public class MainActivity extends ComponentActivity {
       }).show();
   }
 
+  private void showElectionToggleDialog(boolean enable){
+    if(!isAdmin())return;
+    new AlertDialog.Builder(this)
+      .setTitle(enable?"Увімкнути вибори?":"Вимкнути вибори?")
+      .setMessage(enable?
+        "Учасники знову зможуть пропонувати кандидатів і голосувати. Призупинені вибори продовжаться зі збереженими голосами.":
+        "Усі вибори призупиняться. Жоден голос або історичне голосування не буде видалено.")
+      .setNegativeButton("Скасувати",null)
+      .setPositiveButton("Підтвердити",(d,w)->{
+        JSONObject body=new JSONObject();
+        try{body.put("enabled",enable);}catch(Exception ignored){}
+        remote("setElectionsEnabled",body,secure.token(),r->{
+          message(enable?"Вибори ввімкнено":"Вибори вимкнено для всіх");refresh();
+        });
+      }).show();
+  }
   private void drawVotes(){
     textInto(screen,"Вибори касира",23,NAVY,true);
+    boolean electionsEnabled=state.optBoolean("electionsEnabled",true);
+    if(isAdmin()){
+      LinearLayout manage=card(screen);
+      manage.setBackground(background(0xffe9f5f4,14));
+      textInto(manage,electionsEnabled?"Вибори увімкнено":"Вибори вимкнено",
+        16,NAVY,true);
+      textInto(manage,"Тільки адміністратор змінює режим для всіх. За вимкнення поточні голоси та кандидат зберігаються.",
+        12,MUTED,false);
+      button(manage,electionsEnabled?"⏸ Вимкнути вибори":"▶ Увімкнути вибори",
+        ()->showElectionToggleDialog(!electionsEnabled),true);
+    }
+    if(!electionsEnabled)
+      textInto(screen,"⏸ Вибори призупинено адміністратором. Жоден голос не втрачено.",
+        14,0xff9a6100,true);
     JSONArray elections=state.optJSONArray("elections");JSONObject live=null;
     if(elections!=null)for(int i=0;i<elections.length();i++){
       JSONObject e=elections.optJSONObject(i);String status=e.optString("status");
@@ -1762,6 +1818,10 @@ public class MainActivity extends ComponentActivity {
     if(users!=null)for(int i=0;i<users.length();i++)if(users.optJSONObject(i).optBoolean("active"))count++;
     final int required=count/2+1;
     if(count<3){textInto(screen,"Вибори доступні від 3 учасників. Зараз: "+count,14,MUTED,false);return;}
+    if(!electionsEnabled && live==null){
+      textInto(screen,"Нові ініціативи заборонені, поки адміністратор не ввімкне вибори.",
+        13,MUTED,false);return;
+    }
     if(live==null){
       textInto(screen,"Ініціатива двох людей. Для перемоги потрібна більшість: "+required+" із "+count+".",13,MUTED,false);
       button(screen,"Запропонувати кандидата",()->{
@@ -1783,13 +1843,13 @@ public class MainActivity extends ComponentActivity {
       textInto(screen,"Статус: "+status,13,MUTED,false);
       int threshold=e.optInt("required_votes",required);
       textInto(screen,"Голосів потрібно: "+threshold,14,TEAL,true);
-      if(status.equals("PROPOSED"))button(screen,"Підтримати ініціативу",()->simpleAction("supportElection",id),true);
-      if(status.equals("VOTING")){
+      if(electionsEnabled&&status.equals("PROPOSED"))button(screen,"Підтримати ініціативу",()->simpleAction("supportElection",id),true);
+      if(electionsEnabled&&status.equals("VOTING")){
         LinearLayout row=row();screen.addView(row);
         button(row,"За",()->vote(id,"YES"),true);
         button(row,"Проти",()->vote(id,"NO"),false);
       }
-      if(status.equals("APPROVED")&&e.optString("candidate_id").equals(settings.userId()))
+      if(electionsEnabled&&status.equals("APPROVED")&&e.optString("candidate_id").equals(settings.userId()))
         button(screen,"Прийняти повноваження",()->simpleAction("acceptElection",id),true);
       if(!status.equals("PROPOSED")&&!status.equals("VOTING")&&!status.equals("APPROVED"))textInto(screen,"Завершено",13,MUTED,false);
     }
