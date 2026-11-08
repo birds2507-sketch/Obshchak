@@ -898,114 +898,125 @@ public class MainActivity extends ComponentActivity {
 
   private void drawHistory(){
     textInto(screen,"Операції",23,NAVY,true);
-    textInto(screen,"Шукайте за назвою, датою або сумою. Результати оновлюються одразу.",12,MUTED,false);
-    drawLocalEntries(screen);
-    spacer(screen,8);
+    textInto(screen,"Локальні операції відразу показані зверху з позначкою ⟳. Підтверджені Google — без позначки.",
+      12,MUTED,false);
+    if(isCashier()){
+      LinearLayout actions=row();screen.addView(actions);
+      button(actions,"＋ Прихід",()->{formKind="IN";go("form");},true);
+      button(actions,"− Витрата",()->{formKind="OUT";go("form");},true);
+    }
+    spacer(screen,7);
     EditText search=input(screen,"Пошук","",false);
     search.setHint("Назва, 21.03.2026 або 150,00");
-    search.setSingleLine(true);
-    search.setText(historyQuery);
+    search.setSingleLine(true);search.setText(historyQuery);
     LinearLayout filters=row();screen.addView(filters);
     LinearLayout results=new LinearLayout(this);results.setOrientation(LinearLayout.VERTICAL);
     button(filters,"Усі операції",()->{historyWithoutReceipt=false;renderFilteredHistory(results);},false);
     button(filters,"⚠ Без чека",()->{historyWithoutReceipt=true;renderFilteredHistory(results);},false);
-    spacer(screen,8);
     screen.addView(results,new LinearLayout.LayoutParams(-1,-2));
     search.addTextChangedListener(new TextWatcher(){
-      @Override public void beforeTextChanged(CharSequence value,int start,int count,int after){}
-      @Override public void onTextChanged(CharSequence value,int start,int before,int count){
-        historyQuery=value.toString().trim();
-        renderFilteredHistory(results);
+      public void beforeTextChanged(CharSequence value,int start,int count,int after){}
+      public void onTextChanged(CharSequence value,int start,int before,int count){
+        historyQuery=value.toString().trim();renderFilteredHistory(results);
       }
-      @Override public void afterTextChanged(Editable edit){}
+      public void afterTextChanged(Editable edit){}
     });
     renderFilteredHistory(results);
   }
 
   private void renderFilteredHistory(LinearLayout container){
     container.removeAllViews();
-    JSONArray ledger=state.optJSONArray("ledger");
+    CashLedgerPreview preview=cashPreview();
     Map<String,Integer> receiptCounts=receiptCounts();
     Map<String,Long> balances=balancesAfterOperations();
     String query=historyQuery.toLowerCase(new Locale("uk","UA")).trim();
     String compact=query.replace(" ","").replace("\u00a0","");
     if(historyWithoutReceipt){
       LinearLayout note=card(container);note.setBackground(background(0xfffff2cf,12));
-      textInto(note,"⚠ Тільки витрати, до яких не додано чек",13,0xff805900,true);
+      textInto(note,"⚠ Витрати без чека (у тому числі локальні)",13,0xff805900,true);
     }
-    if(ledger==null||ledger.length()==0){
-      textInto(container,"Операцій немає або дані ще не завантажені",14,MUTED,false);return;
+    if(preview.rows.isEmpty()){
+      textInto(container,"Операцій поки немає",14,MUTED,false);return;
     }
-
-    // Compute summaries on ALL matches, independently of the 200 displayed rows.
-    // "Без чека" counts actual OUT records only; reversals are separate corrections.
-    ArrayList<JSONObject> visible=new ArrayList<>();
-    int matched=0,expensesCount=0,withoutReceiptCount=0;
+    ArrayList<CashLedgerPreview.Row> visible=new ArrayList<>();
+    int matched=0,expensesCount=0,withoutReceiptCount=0,localMatches=0;
     long expensesCents=0L,withoutReceiptCents=0L;
-    for(int i=0;i<ledger.length();i++){
-      JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
-      String kind=x.optString("kind");
-      int receiptCount=receiptCounts.getOrDefault(x.optString("id"),0);
-      boolean missing=kind.equals("OUT")&&receiptCount==0;
+    for(CashLedgerPreview.Row row:preview.rows){
+      String kind=row.kind();
+      int receiptCount=row.isLocal()?row.localReceiptCount():
+        receiptCounts.getOrDefault(row.id(),0);
+      boolean missing=kind.equals("OUT")&&receiptCount==0&&!row.pendingReceipt;
       if(historyWithoutReceipt&&!missing)continue;
       if(!query.isEmpty()){
-        String amount=money(Math.abs(x.optLong("amount"))).replace(" ","").replace("\u00a0","");
-        String number=String.format(Locale.US,"%.2f",Math.abs(x.optLong("amount"))/100.0);
-        String date=x.optString("date");
-        String name=x.optString("purpose")+" "+x.optString("person_name")+" "+x.optString("category");
-        if(!name.toLowerCase(new Locale("uk","UA")).contains(query) &&
-           !displayDate(date).contains(query) && !date.contains(query) &&
-           !amount.contains(compact) && !number.contains(compact.replace(',','.')))continue;
+        String amount=money(Math.abs(row.signedCents)).replace(" ","").replace("\u00a0","");
+        String number=String.format(Locale.US,"%.2f",Math.abs(row.signedCents)/100.0);
+        String date=row.tx.optString("date");
+        String name=row.tx.optString("purpose")+" "+row.tx.optString("personName")+" "+
+          row.tx.optString("person_name")+" "+row.tx.optString("category");
+        if(!name.toLowerCase(new Locale("uk","UA")).contains(query)&&
+           !displayDate(date).contains(query)&&!date.contains(query)&&
+           !amount.contains(compact)&&!number.contains(compact.replace(',','.')))continue;
       }
       matched++;
+      if(row.isLocal())localMatches++;
       if(kind.equals("OUT")){
-        expensesCount++;
-        expensesCents+=Math.abs(x.optLong("amount"));
-        if(missing){
-          withoutReceiptCount++;
-          withoutReceiptCents+=Math.abs(x.optLong("amount"));
-        }
+        expensesCount++;expensesCents+=Math.abs(row.signedCents);
+        if(missing){withoutReceiptCount++;withoutReceiptCents+=Math.abs(row.signedCents);}
       }
-      if(visible.size()<200)visible.add(x);
+      if(visible.size()<200)visible.add(row);
     }
 
     LinearLayout summary=card(container);
     summary.setBackground(background(historyWithoutReceipt?0xfffff2cf:0xffe8f4f2,15));
     textInto(summary,historyWithoutReceipt?
-        ("Витрат без чеків: "+withoutReceiptCount):
-        ("Знайдено операцій: "+matched),15,NAVY,true);
+      ("Витрат без чеків: "+withoutReceiptCount):
+      ("Знайдено операцій: "+matched),15,NAVY,true);
     textInto(summary,historyWithoutReceipt?
-        ("Сума без чеків: "+money(withoutReceiptCents)+" ₴"):
-        ("Сума витрат: "+money(expensesCents)+" ₴"),20,historyWithoutReceipt?0xff916100:0xffb63f4c,true);
+      ("Сума без чеків: "+money(withoutReceiptCents)+" ₴"):
+      ("Сума витрат: "+money(expensesCents)+" ₴"),20,
+      historyWithoutReceipt?0xff916100:0xffb63f4c,true);
     if(!historyWithoutReceipt)
       textInto(summary,"Витрат: "+expensesCount+" · Без чеків: "+withoutReceiptCount+
-          " на "+money(withoutReceiptCents)+" ₴",12,MUTED,false);
-    textInto(summary,"За знайденими записами; сторнування враховані окремо.",11,MUTED,false);
+        " на "+money(withoutReceiptCents)+" ₴",12,MUTED,false);
+    if(localMatches>0)
+      textInto(summary,"⟳ Локальних операцій у вибірці: "+localMatches+
+        " · включені в оперативні розрахунки, але ще не в загальний Google-звіт.",
+        12,0xff916100,true);
+    else textInto(summary,"Усі знайдені записи підтверджені Google.",11,MUTED,false);
 
     if(matched==0){
-      LinearLayout empty=card(container);
-      textInto(empty,"Нічого не знайдено",16,NAVY,true);
-      textInto(empty,"Спробуйте іншу дату, суму чи частину назви витрати.",13,MUTED,false);
+      textInto(container,"Нічого не знайдено. Спробуйте інший пошук.",14,MUTED,false);
       return;
     }
     if(matched>visible.size())
-      textInto(container,"Знайдено "+matched+" операцій. Показано перші "+
-          visible.size()+"; уточніть пошук.",12,MUTED,false);
+      textInto(container,"Показано "+visible.size()+" із "+matched+
+        " операцій; уточніть пошук.",12,MUTED,false);
 
-    for(JSONObject x:visible){
-      String kind=x.optString("kind");
-      int receiptCount=receiptCounts.getOrDefault(x.optString("id"),0);
+    for(CashLedgerPreview.Row row:visible){
+      String kind=row.kind();
       LinearLayout c=card(container);
-      String title=kind.equals("IN")?"＋ Прихід":kind.equals("OUT")?"− Розхід":kind.equals("OPENING")?"Початковий залишок":"↶ Коригування";
-      textInto(c,title+"  "+money(Math.abs(x.optLong("amount")))+" ₴",16,x.optLong("amount")<0?0xffb84d46:TEAL,true);
-      textInto(c,displayDate(x.optString("date")),15,NAVY,true);
-      textInto(c,x.optString("purpose"),13,MUTED,false);
-      if(kind.equals("OUT"))receiptTag(c,receiptCount,x.optString("no_receipt_reason"));
-      Long after=balances.get(x.optString("id"));
-      if(after!=null)textInto(c,"Залишок після операції: "+money(after)+" ₴",13,TEAL,true);
-      c.setOnClickListener(v->showDetail(x));
-      TextView details=text("Переглянути деталі й коментарі ›",12,TEAL,true);
-      c.addView(details);details.setOnClickListener(v->showDetail(x));
+      if(row.isLocal())c.setBackground(background(
+        LocalStore.FAILED.equals(row.local.status)||LocalStore.AUTH.equals(row.local.status)?
+        0xfffff1df:0xfff4f8fb,15));
+      String title=kind.equals("IN")?"＋ Прихід":kind.equals("OUT")?"− Розхід":
+        kind.equals("OPENING")?"Початковий залишок":"↶ Коригування";
+      textInto(c,title+"  "+money(Math.abs(row.signedCents))+" ₴",16,
+        row.signedCents<0?0xffb84d46:TEAL,true);
+      textInto(c,displayDate(row.tx.optString("date")),15,NAVY,true);
+      textInto(c,row.tx.optString("purpose"),13,MUTED,false);
+      if(row.isLocal())
+        textInto(c,localTransactionStatus(row.local),13,
+          LocalStore.FAILED.equals(row.local.status)||LocalStore.AUTH.equals(row.local.status)?
+          0xffa54817:0xff916100,true);
+      drawReceiptState(c,row,receiptCounts);
+      Long after=row.balanceAfter;
+      if(after==null)after=balances.get(row.id());
+      if(after!=null)textInto(c,(row.isLocal()?"Оперативний залишок: ":"Залишок після операції: ")+
+        money(after)+" ₴",13,TEAL,true);
+      c.setOnClickListener(v->openRow(row));
+      TextView details=text(row.isLocal()?"Статус синхронізації  ›":
+        "Переглянути деталі й коментарі  ›",12,TEAL,true);
+      c.addView(details);details.setOnClickListener(v->openRow(row));
     }
   }
 
