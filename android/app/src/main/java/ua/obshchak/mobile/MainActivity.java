@@ -1570,8 +1570,7 @@ public class MainActivity extends ComponentActivity {
               remote("toggleUser",body,secure.token(),r->{message("Доступ оновлено");refresh();});
             }).show();
         },false);
-        if(u.optBoolean("active"))
-          button(c,"Вилучити учасника",()->showRemoveUserDialog(target,name,u.optString("login")),false);
+        button(c,"Вилучити учасника",()->showRemoveUserDialog(target,name,u.optString("login")),false);
       }
     }
     if(isAdmin()&&archived>0){
