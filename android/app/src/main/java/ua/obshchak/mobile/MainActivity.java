@@ -123,7 +123,8 @@ public class MainActivity extends ComponentActivity {
           "activity".equals(requested)||"votes".equals(requested))page=requested;
       EventPollWorker.schedule(this);
       if(!secure.deviceToken().isEmpty()){
-        outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
+        outbox.resumeAuth(settings.userId());outbox.resumeReimbursementAuth(settings.userId());
+        QueueSyncWorker.schedule(this);
         FirebaseBridge.register(this);
       }
     }
@@ -423,6 +424,7 @@ public class MainActivity extends ComponentActivity {
     remote("registerDevice",d,secure.token(),r->{try{
       secure.setDeviceToken(r.getString("deviceToken"));
       outbox.resumeAuth(settings.userId());outbox.resumeCommentAuth(settings.userId());
+      outbox.resumeReimbursementAuth(settings.userId());
       QueueSyncWorker.schedule(this);
       EventPollWorker.schedule(this);
       FirebaseBridge.register(this);
