@@ -2129,8 +2129,11 @@ public class MainActivity extends ComponentActivity {
     }
     if(!claim.optString("appeal_decision").isEmpty()){
       boolean upheld="UPHOLD_CASHIER".equals(claim.optString("appeal_decision"));
+      boolean selfConfirmed="RECIPIENT_CONFIRMED".equals(claim.optString("appeal_decision"));
       textInto(content,upheld?"⚖ Адміністратор підтримав касира":
-        "⚖ Адміністратор відхилив апеляцію касира",14,upheld?TEAL:0xffb44b40,true);
+        selfConfirmed?"✓ Отримувач згодом сам підтвердив отримання":
+        "⚖ Адміністратор відхилив апеляцію касира",14,
+        upheld||selfConfirmed?TEAL:0xffb44b40,true);
       textInto(content,"Обґрунтування: "+claim.optString("appeal_decision_reason"),
         13,NAVY,false);
       textInto(content,"Рішення: "+nameOf(claim.optString("appeal_decided_by"))+
