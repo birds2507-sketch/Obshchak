@@ -11,17 +11,21 @@ import java.util.List;
 /** Durable outbox; never removes local source receipt files automatically. */
 final class LocalStore extends SQLiteOpenHelper {
   static final String PENDING="PENDING", SYNCED="SYNCED", AUTH="AUTH_REQUIRED", FAILED="NEEDS_ATTENTION";
-  LocalStore(Context c){super(c,"obshchak_outbox.db",null,2);}
+  LocalStore(Context c){super(c,"obshchak_outbox.db",null,3);}
   @Override public void onCreate(SQLiteDatabase db){
     db.execSQL("CREATE TABLE outbox(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,payload TEXT NOT NULL,ledger_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '')");
     createComments(db);
+    createReimbursements(db);
   }
   private void createComments(SQLiteDatabase db){
     db.execSQL("CREATE TABLE IF NOT EXISTS comment_outbox(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,ledger_id TEXT NOT NULL,message TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '')");
   }
+  private void createReimbursements(SQLiteDatabase db){
+    db.execSQL("CREATE TABLE IF NOT EXISTS reimbursement_outbox(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '')");
+  }
   @Override public void onUpgrade(SQLiteDatabase db,int oldVersion,int newVersion){
-    if(oldVersion==1&&newVersion>=2)createComments(db);
-    else throw new IllegalStateException("Unknown migration; keep user's outbox");
+    if(oldVersion<2&&newVersion>=2)createComments(db);
+    if(oldVersion<3&&newVersion>=3)createReimbursements(db);
   }
   void add(String id,String owner,String payload){ContentValues v=new ContentValues();v.put("id",id);v.put("owner_id",owner);v.put("payload",payload);v.put("status",PENDING);v.put("created_at",System.currentTimeMillis());getWritableDatabase().insertOrThrow("outbox",null,v);}
   static class PendingComment {
@@ -53,6 +57,42 @@ final class LocalStore extends SQLiteOpenHelper {
   void resumeCommentAuth(String owner){
     ContentValues v=new ContentValues();v.put("status",PENDING);v.put("error","");
     getWritableDatabase().update("comment_outbox",v,"owner_id=? AND status=?",new String[]{owner,AUTH});
+  }
+  static class ReimbursementJob {
+    String id,owner,payload,status,error;long created;
+    JSONObject body(){try{return new JSONObject(payload);}catch(Exception ignored){return new JSONObject();}}
+  }
+  void addReimbursement(String id,String owner,JSONObject payload){
+    ContentValues v=new ContentValues();
+    v.put("id",id);v.put("owner_id",owner);v.put("payload",payload.toString());
+    v.put("status",PENDING);v.put("created_at",System.currentTimeMillis());
+    getWritableDatabase().insertOrThrow("reimbursement_outbox",null,v);
+  }
+  List<ReimbursementJob> reimbursements(String owner,boolean all){
+    List<ReimbursementJob> rows=new ArrayList<>();
+    String filter=all?"":" AND status <> 'SYNCED'";
+    try(Cursor c=getReadableDatabase().rawQuery(
+      "SELECT id,owner_id,payload,status,created_at,error FROM reimbursement_outbox WHERE owner_id=?"+filter+" ORDER BY created_at ASC,rowid ASC",
+      new String[]{owner})){
+      while(c.moveToNext()){
+        ReimbursementJob e=new ReimbursementJob();
+        e.id=c.getString(0);e.owner=c.getString(1);e.payload=c.getString(2);
+        e.status=c.getString(3);e.created=c.getLong(4);e.error=c.getString(5);
+        rows.add(e);
+      }
+    }
+    return rows;
+  }
+  void reimbursementStatus(String id,String status,String error){
+    ContentValues v=new ContentValues();v.put("status",status);
+    v.put("error",error==null?"":error);
+    getWritableDatabase().update("reimbursement_outbox",v,"id=?",new String[]{id});
+  }
+  void retryReimbursement(String id){reimbursementStatus(id,PENDING,"");}
+  void resumeReimbursementAuth(String owner){
+    ContentValues v=new ContentValues();v.put("status",PENDING);v.put("error","");
+    getWritableDatabase().update("reimbursement_outbox",v,
+      "owner_id=? AND status=?",new String[]{owner,AUTH});
   }
   void addReceiptOnly(String id,String owner,String ledger,JSONObject body){
     ContentValues v=new ContentValues();v.put("id",id);v.put("owner_id",owner);v.put("payload",body.toString());
