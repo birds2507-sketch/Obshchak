@@ -329,6 +329,37 @@ function electionRules(e){
  let voters=null;try{if(e.electorate)voters=JSON.parse(e.electorate);}catch(err){}
  return {total:voters?voters.length:10,required:Number(e.required_votes)||6,allowed:!voters||voters.includes(A.state.me.id)};
 }
+function myContributionsPage(){
+ const rows=A.state.myContributions||[];
+ const total=rows.reduce((a,x)=>a+Number(x.amount||0),0);
+ const remaining=rows.filter(x=>x.status!=='REVERSED').reduce((a,x)=>a+Number(x.amount||0),0);
+ const pending=rows.filter(x=>['PENDING','DISPUTED'].includes(x.status)).length;
+ const reversed=rows.filter(x=>x.status==='REVERSED').length;
+ const label=x=>x.status==='REVERSED'?'✕ Сторновано':
+   x.status==='PENDING'?'⚠ Запит на сторнування':
+   x.status==='DISPUTED'?'⚠ Сторнування оскаржено':'✓ Чинний внесок';
+ let html='<div class="stack"><div class="headrow"><h1>Мій кабінет · Мої внески</h1>'+
+   '<span class="tag">'+rows.length+' внесків</span></div>';
+ html+='<div class="card"><h2>'+esc(A.state.me.name)+'</h2>'+
+   '<p class="small">Тут лише внески, які касир прив’язав до вашого облікового запису.</p>'+
+   '<div class="grid2"><div><div class="tiny">Внесено всього</div>'+
+   '<div class="metric positive">'+euro(total)+'</div></div>'+
+   '<div><div class="tiny">Залишилося чинних внесків</div>'+
+   '<div class="metric positive">'+euro(remaining)+'</div></div></div>'+
+   '<p class="small">Сторновано: '+reversed+' · Заявки і заперечення: '+pending+'</p></div>';
+ html+='<div class="card"><h2>Історія внесків</h2>';
+ if(!rows.length)html+='<div class="empty">Підтверджених Google внесків поки немає</div>';
+ for(const x of rows){
+   html+='<div class="rowitem" data-act="detail" data-id="'+esc(x.id)+'">'+
+     '<div><strong>'+euro(x.amount)+' · '+formatDate(x.date)+'</strong>'+
+     '<div class="small">'+esc(x.purpose)+'</div>'+
+     '<div class="tiny">'+label(x.status)+
+       (x.reversal_reason?' · Причина: '+esc(x.reversal_reason):'')+
+     '</div></div><div class="right">Переглянути ›</div></div>';
+ }
+ html+='</div><p class="small muted">Внески, де вказано лише схоже ПІБ, автоматично не приписуються вашому кабінету. Запит на сторнування сам по собі не змінює суму, доки сторно не затверджене й не проведене.</p></div>';
+ return html;
+}
 function votesPage(){
  const enabled=A.state.electionsEnabled!==false;
  const live=A.state.users.filter(u=>u.active).length;
