@@ -118,6 +118,54 @@ public class QueueSyncWorker extends Worker {
       }
     }
 
+    // Phase 3: members' reimbursement requests, including the original receipt.
+    // The same client ID is used on every retry, so an uncertain network result
+    // cannot create multiple debts or upload a second receipt.
+    if(!retry)for(LocalStore.ReimbursementJob job:store.reimbursements(s.userId(),false)){
+      if(isStopped())return Result.retry();
+      if(LocalStore.FAILED.equals(job.status))continue;
+      try{
+        JSONObject payload=job.body();
+        JSONObject file=payload.optJSONObject("file");
+        if(file==null)throw new ApiClient.ApiException("До заявки не додано чек",false,false);
+        File source=new File(file.optString("uploadPath"));
+        if(!source.isFile())throw new ApiClient.ApiException("Оригінал чека не знайдено на телефоні",false,false);
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+        try(FileInputStream in=new FileInputStream(source)){
+          byte[] buffer=new byte[8192];int count;
+          while((count=in.read(buffer))!=-1){
+            bytes.write(buffer,0,count);
+            if(bytes.size()>2_000_000)
+              throw new ApiClient.ApiException("Чек перевищує 2 МБ",false,false);
+          }
+        }
+        JSONObject document=new JSONObject()
+          .put("name",file.optString("name","Чек"))
+          .put("mime",file.optString("mime"))
+          .put("data",Base64.encodeToString(bytes.toByteArray(),Base64.NO_WRAP));
+        JSONObject args=new JSONObject()
+          .put("clientId",job.id)
+          .put("amount",payload.optString("amount"))
+          .put("purpose",payload.optString("purpose"))
+          .put("category",payload.optString("category"))
+          .put("expenseTarget",payload.optString("expenseTarget"))
+          .put("receipt",document);
+        api.call("syncReimbursement",args,token);
+        store.reimbursementStatus(job.id,LocalStore.SYNCED,"");
+      }catch(ApiClient.ApiException e){
+        if(e.auth){
+          store.reimbursementStatus(job.id,LocalStore.AUTH,"Потрібен повторний вхід");
+          return Result.success();
+        }
+        if(e.retry){store.reimbursementStatus(job.id,LocalStore.PENDING,e.getMessage());retry=true;break;}
+        store.reimbursementStatus(job.id,LocalStore.FAILED,e.getMessage());
+      }catch(Exception e){
+        store.reimbursementStatus(job.id,LocalStore.PENDING,
+          "Немає відповіді Google. Спробуємо пізніше.");
+        retry=true;break;
+      }
+    }
+
     // Offline comments belong to every active member, not just the cashier.
     // Retry only with the stable client UUID; the server rejects conflicting duplicates.
     if(!retry)for(LocalStore.PendingComment item:store.comments(s.userId(),false)){
