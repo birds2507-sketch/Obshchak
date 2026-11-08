@@ -324,7 +324,7 @@ public class MainActivity extends ComponentActivity {
       LinearLayout info=card(screen);
       textInto(info,"Щоб підключити касу, натисніть ⚙ угорі праворуч.",14,TEAL,true);
     }
-    EditText user=input(screen,"Логін",getPreferences(MODE_PRIVATE).getString("last_login","kasyr"),false);
+    EditText user=input(screen,"Логін",getPreferences(MODE_PRIVATE).getString("last_login",""),false);
     EditText pass=input(screen,"Пароль","",true);
     button(screen,"Увійти",()->{
       if(!settings.url().matches("https://script\\.google\\.com/macros/s/[^/?#]+/exec")){
@@ -343,7 +343,47 @@ public class MainActivity extends ComponentActivity {
         }catch(Exception ex){message("Не вдалося зберегти сеанс: "+ex.getMessage());}
       });
     },true);
-    textInto(screen,"Облікові записи створює касир. Пароль не зберігається на телефоні: лише тимчасовий токен у захищеному сховищі Android.",12,MUTED,false);
+    textInto(screen,"Користувачів і касира створює адміністратор. Пароль не зберігається на телефоні.",12,MUTED,false);
+    button(screen,"Перший запуск · Зареєструвати адміністратора",()->{
+      remote("registrationState",new JSONObject(),"",result->{
+        if(result.optBoolean("needsSetup")){message("Спочатку запустіть setupOwner_() у Google Apps Script");return;}
+        if(!result.optBoolean("needsAdmin")){
+          message("Перший адміністратор уже зареєстрований. Увійдіть із його логіном.");return;
+        }
+        showFirstAdminRegistrationDialog();
+      });
+    },false);
+  }
+  private void showFirstAdminRegistrationDialog(){
+    LinearLayout pane=new LinearLayout(this);pane.setOrientation(LinearLayout.VERTICAL);
+    pane.setPadding(dp(17),dp(7),dp(17),dp(8));
+    textInto(pane,"Код із журналу виконання Apps Script діє 7 днів. Його бачить лише власник проєкту.",
+      12,MUTED,false);
+    EditText code=input(pane,"Одноразовий код (64 символи)","",false);
+    EditText name=input(pane,"Ім'я адміністратора","",false);
+    EditText login=input(pane,"Логін адміністратора","",false);
+    EditText password=input(pane,"Особистий PIN (4 цифри) або довгий пароль","",true);
+    EditText again=input(pane,"Повторіть PIN / пароль","",true);
+    ScrollView scroll=new ScrollView(this);scroll.addView(pane);
+    new AlertDialog.Builder(this).setTitle("Перший адміністратор")
+      .setView(scroll).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Зареєструвати",(dialog,which)->{
+        if(!password.getText().toString().equals(again.getText().toString())){
+          message("PIN / паролі не збігаються");return;
+        }
+        JSONObject body=new JSONObject();
+        try{
+          body.put("code",code.getText().toString().trim());
+          body.put("name",name.getText().toString().trim());
+          body.put("login",login.getText().toString().trim());
+          body.put("password",password.getText().toString());
+        }catch(Exception ignored){}
+        remote("registerFirstAdmin",body,"",res->{
+          getPreferences(MODE_PRIVATE).edit()
+            .putString("last_login",res.optString("login")).apply();
+          draw();message("Адміністратора створено. Увійдіть з новими даними.");
+        });
+      }).show();
   }
   /** Local settings gate. This PIN is not server authorization; actual access is protected by account login. */
   private void askEndpointPin(){
@@ -1481,58 +1521,70 @@ public class MainActivity extends ComponentActivity {
   private boolean isAdmin(){return settings.role().equals("ADMIN")||settings.role().equals("RESERVE");}
 
   private void drawUsers(){
-    textInto(screen,"Учасники та доступ",23,NAVY,true);
+    textInto(screen,"Користувачі та доступ",23,NAVY,true);
     JSONArray users=state.optJSONArray("users");
-    int active=0;boolean adminExists=false;
+    int active=0,archived=0;boolean adminExists=false,hasCashier=false;
     if(users!=null)for(int i=0;i<users.length();i++){
       JSONObject u=users.optJSONObject(i);if(u==null)continue;
+      if(u.optBoolean("deleted")){archived++;continue;}
       if(u.optBoolean("active"))active++;
-      if(u.optString("role").equals("ADMIN")||u.optString("role").equals("RESERVE"))
-        adminExists=true;
+      if((u.optString("role").equals("ADMIN")||u.optString("role").equals("RESERVE"))&&u.optBoolean("active"))adminExists=true;
+      if(u.optString("role").equals("CASHIER")&&u.optBoolean("active"))hasCashier=true;
     }
     textInto(screen,active+" із 10 активних",15,TEAL,true);
-    textInto(screen,"Адміністратор керує обліковими записами, касир веде гроші, інші учасники переглядають операції й коментують.",
+    textInto(screen,"Адміністратор створює користувачів, міняє логіни й касира. Старі внески, чеки та історія вилучених людей залишаються для перевірки.",
       12,MUTED,false);
-
     if(isCashier()&&!adminExists){
       LinearLayout info=card(screen);info.setBackground(background(0xffe9f5f4,15));
-      textInto(info,"Перший запуск адміністратора",17,NAVY,true);
-      textInto(info,"Ваша облікова роль касира збережеться. Створіть окремий обліковий запис адміністратора лише один раз.",
-        13,MUTED,false);
+      textInto(info,"Реєстрація адміністратора для старої бази",16,NAVY,true);
       button(info,"＋ Створити адміністратора",()->showNewAccountDialog(true),true);
     }
     if(isAdmin()){
-      textInto(screen,"Ви — адміністратор. Можете додавати, блокувати та відновлювати доступ учасників.",
-        13,TEAL,true);
-      if(active<10)button(screen,"＋ Створити учасника",()->showNewAccountDialog(false),true);
+      if(!hasCashier)textInto(screen,"Касира ще немає. Створіть його або призначте з учасників.",
+        13,0xff936000,true);
+      if(active<10)button(screen,"＋ Створити користувача",()->showNewAccountDialog(false),true);
     }
     if(users==null)return;
     for(int i=0;i<users.length();i++){
-      JSONObject u=users.optJSONObject(i);if(u==null)continue;
+      JSONObject u=users.optJSONObject(i);if(u==null||u.optBoolean("deleted"))continue;
+      final String target=u.optString("id"),name=u.optString("name");
+      final String role=u.optString("role");
       LinearLayout c=card(screen);
-      textInto(c,u.optString("name"),16,NAVY,true);
-      textInto(c,u.optString("login")+" · "+roleName(u.optString("role"))+
-        (u.optBoolean("active")?" · активний":" · заблокований"),12,
-        u.optBoolean("active")?MUTED:0xffaf541c,false);
-      if(!isAdmin()||settings.userId().equals(u.optString("id")))continue;
-      String otherRole=u.optString("role");
-      if(otherRole.equals("ADMIN")||otherRole.equals("RESERVE"))continue;
-      final String target=u.optString("id");
-      final String name=u.optString("name");
-      button(c,"🔑 Змінити тимчасовий PIN / пароль",
+      textInto(c,name,16,NAVY,true);
+      textInto(c,u.optString("login")+" · "+roleName(role)+
+        (u.optBoolean("active")?" · активний":" · заблокований"),
+        12,u.optBoolean("active")?MUTED:0xffaf541c,false);
+      if(!isAdmin())continue;
+      button(c,"✎ Змінити логін",()->showChangeLoginDialog(target,name,u.optString("login")),false);
+      if(settings.userId().equals(target)||role.equals("ADMIN")||role.equals("RESERVE"))continue;
+      button(c,"🔑 Новий тимчасовий PIN / пароль",
         ()->showResetAccessDialog(target,name),false);
-      if(otherRole.equals("MEMBER"))
-        button(c,u.optBoolean("active")?"Заблокувати доступ":"Відновити доступ",()->{
-          new AlertDialog.Builder(this).setTitle("Доступ учасника")
-            .setMessage((u.optBoolean("active")?"Заблокувати ":"Відновити доступ: ")+name+"?")
-            .setNegativeButton("Скасувати",null)
-            .setPositiveButton("Підтвердити",(dialog,which)->{
-              JSONObject body=new JSONObject();try{body.put("id",target);}catch(Exception ignored){}
-              remote("toggleUser",body,secure.token(),reply->{
-                message("Доступ оновлено");refresh();
-              });
+      if(role.equals("MEMBER")){
+        if(u.optBoolean("active"))
+          button(c,"Призначити касиром",()->showAssignCashierDialog(target,name),false);
+        button(c,u.optBoolean("active")?"Заблокувати":"Відновити",()->{
+          new AlertDialog.Builder(this).setTitle("Доступ")
+            .setMessage("Змінити стан доступу: "+name+"?")
+            .setNegativeButton("Ні",null).setPositiveButton("Так",(d,w)->{
+              JSONObject body=debtArgs(target,"id",target);
+              remote("toggleUser",body,secure.token(),r->{message("Доступ оновлено");refresh();});
             }).show();
         },false);
+        if(u.optBoolean("active"))
+          button(c,"Вилучити учасника",()->showRemoveUserDialog(target,name,u.optString("login")),false);
+      }
+    }
+    if(isAdmin()&&archived>0){
+      final StringBuilder list=new StringBuilder();
+      for(int i=0;i<users.length();i++){
+        JSONObject u=users.optJSONObject(i);
+        if(u!=null&&u.optBoolean("deleted"))
+          list.append(u.optString("name")).append(" · ").append(u.optString("login"))
+            .append(" (доступ закрито)\n");
+      }
+      button(screen,"Архів вилучених: "+archived,()->
+        new AlertDialog.Builder(this).setTitle("Архів користувачів")
+          .setMessage(list.toString()).setPositiveButton("Закрити",null).show(),false);
     }
   }
 
@@ -1544,6 +1596,61 @@ public class MainActivity extends ComponentActivity {
     return pin;
   }
 
+  private void showChangeLoginDialog(String id,String name,String previous){
+    if(!isAdmin())return;
+    LinearLayout pane=new LinearLayout(this);pane.setOrientation(LinearLayout.VERTICAL);
+    pane.setPadding(dp(17),dp(7),dp(17),dp(5));
+    textInto(pane,"Логін для "+name+" · після зміни потрібен повторний вхід.",
+      13,MUTED,false);
+    EditText login=input(pane,"Новий логін",previous,false);
+    new AlertDialog.Builder(this).setTitle("Змінити логін")
+      .setView(pane).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Змінити",(d,w)->{
+        JSONObject body=debtArgs(id,"login",login.getText().toString().trim());
+        remote("changeLogin",body,secure.token(),result->{
+          if(result.optBoolean("relogin")){
+            secure.clear();settings.clearUser();page="login";draw();
+            message("Ваш логін змінено. Увійдіть із новим логіном.");
+          }else{message("Логін змінено");refresh();}
+        });
+      }).show();
+  }
+  private void showAssignCashierDialog(String id,String name){
+    if(!isAdmin())return;
+    LinearLayout pane=new LinearLayout(this);pane.setOrientation(LinearLayout.VERTICAL);
+    pane.setPadding(dp(17),dp(7),dp(17),dp(5));
+    textInto(pane,"Новий касир: "+name+". Попередній касир стане учасником.",
+      14,NAVY,true);
+    EditText reason=input(pane,"Причина зміни касира","",false);
+    new AlertDialog.Builder(this).setTitle("Призначення касира")
+      .setView(pane).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Призначити",(d,w)->{
+        JSONObject body=debtArgs(id,"reason",reason.getText().toString().trim());
+        new AlertDialog.Builder(this).setTitle("Підтвердити передачу ролі")
+          .setMessage("Призначити "+name+" касиром? Фактичні гроші потрібно звірити та передати окремим актом.")
+          .setNegativeButton("Ні",null).setPositiveButton("Так",(di,wh)->{
+            remote("assignCashier",body,secure.token(),r->{
+              message("Касира призначено. Звірте фактичні кошти.");refresh();
+            });
+          }).show();
+      }).show();
+  }
+  private void showRemoveUserDialog(String id,String name,String login){
+    if(!isAdmin())return;
+    LinearLayout pane=new LinearLayout(this);pane.setOrientation(LinearLayout.VERTICAL);
+    pane.setPadding(dp(17),dp(7),dp(17),dp(5));
+    textInto(pane,"Учасника буде вилучено з активного складу. Фінансова історія залишиться.",
+      13,MUTED,false);
+    EditText typed=input(pane,"Введіть логін "+login+" для підтвердження","",false);
+    new AlertDialog.Builder(this).setTitle("Вилучити "+name+"?")
+      .setView(pane).setNegativeButton("Скасувати",null)
+      .setPositiveButton("Вилучити",(d,w)->{
+        JSONObject body=debtArgs(id,"confirmLogin",typed.getText().toString().trim());
+        remote("removeUser",body,secure.token(),res->{
+          message("Учасника вилучено, історія збережена.");refresh();
+        });
+      }).show();
+  }
   private void showNewAccountDialog(boolean administrator){
     if(administrator&&!isCashier())return;
     if(!administrator&&!isAdmin())return;
@@ -1552,6 +1659,18 @@ public class MainActivity extends ComponentActivity {
     EditText name=input(form,administrator?"Ім'я адміністратора":"Ім'я учасника","",false);
     EditText login=input(form,"Особистий логін (латиницею)","",false);
     EditText pin=personalPinField(form);
+    CheckBox createCashier=new CheckBox(this);
+    boolean currentCashier=false;
+    JSONArray existing=state.optJSONArray("users");
+    if(existing!=null)for(int i=0;i<existing.length();i++){
+      JSONObject u=existing.optJSONObject(i);
+      if(u!=null&&u.optBoolean("active")&&"CASHIER".equals(u.optString("role")))
+        currentCashier=true;
+    }
+    if(!administrator&&!currentCashier){
+      createCashier.setText("Створити як касира");
+      form.addView(createCashier);
+    }
     textInto(form,"Під час першого входу потрібно встановити власний PIN або пароль.",
       12,MUTED,false);
     new AlertDialog.Builder(this)
@@ -1567,6 +1686,7 @@ public class MainActivity extends ComponentActivity {
           data.put("name",name.getText().toString().trim());
           data.put("login",login.getText().toString().trim());
           if(!p.isEmpty())data.put("pin",p);
+          if(!administrator&&createCashier.isChecked())data.put("role","CASHIER");
         }catch(Exception ignored){}
         remote(administrator?"bootstrapAdmin":"invite",data,secure.token(),result->{
           showNewCredentials(result);refresh();
