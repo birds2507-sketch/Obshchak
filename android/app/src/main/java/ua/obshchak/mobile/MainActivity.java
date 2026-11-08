@@ -419,145 +419,157 @@ public class MainActivity extends ComponentActivity {
       remote("changePassword",d,secure.token(),r->{secure.clear();settings.clearUser();page="login";draw();message("Пароль змінено. Увійдіть ще раз.");});
     },true);
   }
-  private void drawHome(){
-    JSONObject totals=state.optJSONObject("totals");
-    if(totals==null)totals=new JSONObject();
+  private CashLedgerPreview cashPreview(){
+    if(!isCashier()||settings.userId().isEmpty())
+      return CashLedgerPreview.build(state,new ArrayList<LocalStore.Entry>());
+    return CashLedgerPreview.build(state,outbox.recentTransactions(settings.userId()));
+  }
 
+  private void drawHome(){
+    CashLedgerPreview preview=cashPreview();
+    boolean pending=preview.localCount>0;
     LinearLayout balance=card(screen);
     balance.setBackground(background(0xff2165c6,20));
     balance.setPadding(dp(20),dp(18),dp(18),dp(18));
-    textInto(balance,"Загальний залишок",15,0xffdce9ff,true);
-    textInto(balance,money(totals.optLong("balance"))+" ₴",33,Color.WHITE,true);
-    textInto(balance,"Готівка + картка · лише підтверджені записи Google",12,0xffe7f1ff,false);
+    textInto(balance,pending?"ОПЕРАТИВНИЙ ЗАЛИШОК":"ЗАГАЛЬНИЙ ЗАЛИШОК",14,0xffdce9ff,true);
+    textInto(balance,money(preview.operationalBalance)+" ₴",33,Color.WHITE,true);
+    if(pending){
+      textInto(balance,"Підтверджено Google: "+money(preview.confirmedBalance)+" ₴",14,Color.WHITE,true);
+      long difference=preview.operationalBalance-preview.confirmedBalance;
+      textInto(balance,"Локальні операції: "+(difference>=0?"+":"−")+
+          money(Math.abs(difference))+" ₴ · "+preview.localCount+" у синхронізації",
+          12,0xffe7f1ff,false);
+      if(preview.needsAttention>0)
+        textInto(balance,"⚠ "+preview.needsAttention+" потребують перевірки в черзі",12,0xffffe0a3,true);
+      textInto(balance,"Оперативний розрахунок видно лише на цьому телефоні до передачі в Google.",
+          11,0xffe7f1ff,false);
+    }else{
+      textInto(balance,"Готівка + картка · підтверджено Google",12,0xffe7f1ff,false);
+    }
 
     LinearLayout split=row();
     screen.addView(split,new LinearLayout.LayoutParams(-1,-2));
-    summary(split,"↓  Прихід","+"+money(totals.optLong("income"))+" ₴",0xffe7f6ef,0xff168255);
-    summary(split,"↑  Розхід","−"+money(totals.optLong("expense"))+" ₴",0xffffecee,0xffb63f4c);
-    spacer(screen,8);
+    summary(split,"↓  Прихід","+"+money(preview.operationalIncome)+" ₴",0xffe7f6ef,0xff168255);
+    summary(split,"↑  Розхід","−"+money(preview.operationalExpense)+" ₴",0xffffecee,0xffb63f4c);
+    if(pending)textInto(screen,"Підсумки включають локальні операції й уточняться після синхронізації.",
+        11,MUTED,false);
 
     if(isCashier()){
-      LinearLayout actions=row();
-      screen.addView(actions,new LinearLayout.LayoutParams(-1,-2));
-      button(actions,"＋ Прихід",()->{formKind="IN";go("form");},true);
-      button(actions,"− Витрата",()->{formKind="OUT";go("form");},true);
+      LinearLayout actions=row();screen.addView(actions,new LinearLayout.LayoutParams(-1,-2));
+      button(actions,"＋ Новий прихід",()->{formKind="IN";go("form");},true);
+      button(actions,"− Нова витрата",()->{formKind="OUT";go("form");},true);
     }
 
-    drawLocalEntries(screen);
     LinearLayout title=row();screen.addView(title);
     TextView heading=text("Останні операції",19,NAVY,true);
     title.addView(heading,new LinearLayout.LayoutParams(0,-2,1f));
     TextView all=text("Усі  ›",13,TEAL,true);title.addView(all);
-    all.setOnClickListener(v->go("history"));
-    spacer(screen,7);
+    all.setOnClickListener(v->go("history"));spacer(screen,7);
 
-    JSONArray ledger=state.optJSONArray("ledger");
     Map<String,Integer> receiptCounts=receiptCounts();
     Map<String,Long> balances=balancesAfterOperations();
     LinearLayout recent=card(screen);
-    if(ledger==null||ledger.length()==0){
-      textInto(recent,"Операцій поки немає",14,MUTED,false);
-    }else{
-      int n=0;
-      for(int i=0;i<ledger.length()&&n<5;i++){
-        JSONObject x=ledger.optJSONObject(i);if(x==null)continue;
-        String kind=x.optString("kind");
-        if(!kind.equals("IN")&&!kind.equals("OUT")&&!kind.equals("REVERSAL")&&!kind.equals("OPENING"))continue;
-        if(n++>0)separator(recent);
-        LinearLayout item=row();item.setPadding(dp(2),dp(8),dp(2),dp(8));recent.addView(item);
-        TextView symbol=text(kind.equals("IN")?"+":kind.equals("OUT")?"−":"↶",22,kind.equals("IN")?0xff168255:0xffb63f4c,true);
-        symbol.setGravity(Gravity.CENTER);
-        symbol.setBackground(background(kind.equals("IN")?0xffe5f5ec:0xffffeded,22));
-        item.addView(symbol,new LinearLayout.LayoutParams(dp(37),dp(37)));
-        LinearLayout detail=new LinearLayout(this);detail.setPadding(dp(10),0,0,0);detail.setOrientation(LinearLayout.VERTICAL);
-        item.addView(detail,new LinearLayout.LayoutParams(0,-2,1f));
-        textInto(detail,x.optString("purpose").isEmpty()?(kind.equals("IN")?"Внесок":"Витрата"):x.optString("purpose"),14,NAVY,true);
-        String extra=x.optString("person_name");
-        if(extra.isEmpty())extra=x.optString("category");
-        textInto(detail,displayDate(x.optString("date")),13,NAVY,true);
-        if(!extra.isEmpty())textInto(detail,extra,11,MUTED,false);
-        if(kind.equals("OUT"))receiptTag(detail,receiptCounts.getOrDefault(x.optString("id"),0),x.optString("no_receipt_reason"));
-        Long after=balances.get(x.optString("id"));
-        if(after!=null)textInto(detail,"Залишок: "+money(after)+" ₴",12,TEAL,true);
-        TextView amount=text((x.optLong("amount")>=0?"+":"−")+money(Math.abs(x.optLong("amount")))+" ₴",15,x.optLong("amount")>=0?0xff168255:0xffb63f4c,true);
-        amount.setGravity(Gravity.RIGHT);item.addView(amount);
-        item.setOnClickListener(v->showDetail(x));
-      }
+    if(preview.rows.isEmpty())textInto(recent,"Операцій поки немає",14,MUTED,false);
+    int number=Math.min(5,preview.rows.size());
+    for(int i=0;i<number;i++){
+      CashLedgerPreview.Row item=preview.rows.get(i);
+      if(i>0)separator(recent);
+      drawCompactTransaction(recent,item,receiptCounts,balances);
     }
 
     LinearLayout shortcuts=row();screen.addView(shortcuts);
     quickTile(shortcuts,"▤","Чеки витрат",countReceipts()+" файлів",()->go("receipts"));
     quickTile(shortcuts,"☏","Запитання",unreadCount()>0?("Нових: "+unreadCount()):"Усі прочитані",()->go("questions"));
-    quickTile(shortcuts,"☁","Синхронізація",outbox.list(settings.userId(),false).size()+" у черзі",()->go("queue"));
-    spacer(screen,6);
-    textInto(screen,"Записи, не передані в Google, поки не входять до загального залишку.",12,MUTED,false);
-  }
-
-  /**
-   * Show durable SQLite transactions immediately; never merge their values into
-   * the official balance until the Google ledger confirms them.
-   */
-  private void drawLocalEntries(LinearLayout parent){
-    if(!isCashier()||settings.userId().isEmpty())return;
-    java.util.List<LocalStore.Entry> all=outbox.recentTransactions(settings.userId());
-    if(all.isEmpty())return;
-    Set<String> remoteIds=new HashSet<>();
-    JSONArray remote=state.optJSONArray("ledger");
-    if(remote!=null)for(int i=0;i<remote.length();i++){
-      JSONObject item=remote.optJSONObject(i);
-      if(item!=null)remoteIds.add(item.optString("id"));
-    }
-    ArrayList<LocalStore.Entry> outstanding=new ArrayList<>();
-    int notConfirmed=0,attention=0;
-    for(int i=all.size()-1;i>=0;i--){
-      LocalStore.Entry entry=all.get(i);
-      JSONObject tx=entry.body().optJSONObject("tx");
-      if(tx==null||remoteIds.contains(entry.id)||
-        (!entry.ledger.isEmpty()&&remoteIds.contains(entry.ledger)))continue;
-      // Old completed entries can be safely omitted if Google has long since moved on.
-      if(LocalStore.SYNCED.equals(entry.status)&&
-        System.currentTimeMillis()-entry.created>7L*24*60*60*1000)continue;
-      outstanding.add(entry);
-      if(entry.ledger.isEmpty())notConfirmed++;
-      if(LocalStore.FAILED.equals(entry.status)||LocalStore.AUTH.equals(entry.status))attention++;
-    }
-    if(outstanding.isEmpty())return;
-    LinearLayout card=card(parent);
-    card.setBackground(background(attention>0?0xfffff1df:0xffeaf4f9,15));
-    textInto(card,"На цьому телефоні · "+outstanding.size()+" записів",16,NAVY,true);
-    textInto(card,notConfirmed>0?
-        (notConfirmed+" ще не підтверджено в Google · не входять до загального балансу"):
-        "Операції вже надіслані · оновлюємо загальний журнал",
+    quickTile(shortcuts,"☁","Синхронізація",
+      outbox.list(settings.userId(),false).size()+" у черзі",()->go("queue"));
+    textInto(screen,"⟳ Локальні записи відразу видно касиру. Інші учасники бачать їх після Google.",
         12,MUTED,false);
-    int shown=Math.min(4,outstanding.size());
-    for(int i=0;i<shown;i++){
-      LocalStore.Entry entry=outstanding.get(i);
-      JSONObject tx=entry.body().optJSONObject("tx");
-      if(tx==null)continue;
-      if(i>0)separator(card);
-      boolean expense="OUT".equals(tx.optString("kind"));
-      String amount=tx.optString("amount","0").replace(',','.');
-      textInto(card,(expense?"− ":"＋ ")+tx.optString("purpose","Операція")+
-          " · "+amount+" ₴",14,NAVY,true);
-      textInto(card,displayDate(tx.optString("date"))+" · "+
-          localTransactionStatus(entry),12,
-          LocalStore.FAILED.equals(entry.status)||LocalStore.AUTH.equals(entry.status)?
-          0xffa54817:TEAL,true);
-    }
-    if(outstanding.size()>shown)
-      textInto(card,"І ще "+(outstanding.size()-shown)+" записів",12,MUTED,false);
-    TextView link=text("Переглянути передачу та помилки  ›",13,TEAL,true);
-    card.addView(link);
-    card.setOnClickListener(v->go("queue"));
-    link.setOnClickListener(v->go("queue"));
   }
 
-  private String localTransactionStatus(LocalStore.Entry e){
-    if(LocalStore.FAILED.equals(e.status))return "⚠ Потрібна ваша увага";
-    if(LocalStore.AUTH.equals(e.status))return "⚠ Потрібен повторний вхід";
-    if(LocalStore.SYNCED.equals(e.status))return "✓ Передано в Google · очікує оновлення екрана";
-    if(!e.ledger.isEmpty())return "✓ Операція в Google · чеки передаються";
-    return "◷ Збережено на телефоні · синхронізується";
+  private void drawCompactTransaction(LinearLayout parent,CashLedgerPreview.Row row,
+                                      Map<String,Integer> receiptCounts,Map<String,Long> balances){
+    boolean debit=row.signedCents<0;
+    LinearLayout item=row();item.setPadding(dp(2),dp(8),dp(2),dp(8));parent.addView(item);
+    TextView symbol=text(row.isLocal()?"⟳":debit?"−":"+",21,
+        row.isLocal()?0xff936000:debit?0xffb63f4c:0xff168255,true);
+    symbol.setGravity(Gravity.CENTER);
+    symbol.setBackground(background(row.isLocal()?0xfffff2cf:
+        debit?0xffffeded:0xffe5f5ec,22));
+    item.addView(symbol,new LinearLayout.LayoutParams(dp(37),dp(37)));
+    LinearLayout detail=new LinearLayout(this);
+    detail.setPadding(dp(9),0,dp(5),0);detail.setOrientation(LinearLayout.VERTICAL);
+    item.addView(detail,new LinearLayout.LayoutParams(0,-2,1f));
+    String purpose=row.tx.optString("purpose");
+    textInto(detail,purpose.isEmpty()?"Операція":purpose,14,NAVY,true);
+    textInto(detail,displayDate(row.tx.optString("date")),13,NAVY,true);
+    String extra=row.isLocal()?row.tx.optString("category"):
+        row.tx.optString("person_name",row.tx.optString("category"));
+    if(!extra.isEmpty())textInto(detail,extra,11,MUTED,false);
+    if(row.isLocal()){
+      textInto(detail,localTransactionStatus(row.local),12,
+        LocalStore.FAILED.equals(row.local.status)||LocalStore.AUTH.equals(row.local.status)?
+        0xffa54817:0xff987000,true);
+    }
+    drawReceiptState(detail,row,receiptCounts);
+    Long after=row.balanceAfter;
+    if(after==null)after=balances.get(row.id());
+    if(after!=null)
+      textInto(detail,(row.isLocal()?"Оперативний залишок: ":"Залишок: ")+money(after)+" ₴",
+          12,TEAL,true);
+    LinearLayout right=new LinearLayout(this);right.setOrientation(LinearLayout.VERTICAL);
+    right.setGravity(Gravity.RIGHT);
+    item.addView(right,new LinearLayout.LayoutParams(-2,-2));
+    textInto(right,(debit?"−":"+")+money(Math.abs(row.signedCents))+" ₴",14,
+        debit?0xffb63f4c:0xff168255,true);
+    textInto(right,row.isLocal()?"На телефоні":"Переглянути ›",10,MUTED,false);
+    item.setOnClickListener(v->openRow(row));
+  }
+
+  private void drawReceiptState(LinearLayout parent,CashLedgerPreview.Row row,
+                                Map<String,Integer> receiptCounts){
+    if(!row.kind().equals("OUT"))return;
+    if(row.isLocal()&&row.localReceiptCount()>0){
+      textInto(parent,"📎 Чек на телефоні · передається",11,0xff987000,true);
+    }else if(!row.isLocal()&&row.pendingReceipt&&
+             receiptCounts.getOrDefault(row.id(),0)==0){
+      textInto(parent,"📎 Чек синхронізується",11,0xff987000,true);
+    }else{
+      receiptTag(parent,row.isLocal()?0:receiptCounts.getOrDefault(row.id(),0),
+          row.tx.optString("noReceiptReason"));
+    }
+  }
+
+  private void openRow(CashLedgerPreview.Row row){
+    if(!row.isLocal()){showDetail(row.tx);return;}
+    LinearLayout view=new LinearLayout(this);view.setOrientation(LinearLayout.VERTICAL);
+    view.setPadding(dp(16),dp(8),dp(16),dp(8));
+    textInto(view,row.tx.optString("purpose"),19,NAVY,true);
+    textInto(view,displayDate(row.tx.optString("date")),14,NAVY,true);
+    textInto(view,money(row.signedCents)+" ₴",19,NAVY,true);
+    textInto(view,localTransactionStatus(row.local),13,0xff987000,true);
+    if(row.balanceAfter!=null)
+      textInto(view,"Оперативний залишок після операції: "+money(row.balanceAfter)+" ₴",
+        14,TEAL,true);
+    if(row.kind().equals("OUT")){
+      textInto(view,"Категорія: "+row.tx.optString("category"),12,MUTED,false);
+      textInto(view,"Збережених чеків: "+row.localReceiptCount(),12,MUTED,false);
+    }
+    if(row.local.error!=null&&!row.local.error.isEmpty())
+      textInto(view,"Причина збою: "+row.local.error,12,0xffa54817,true);
+    textInto(view,"Цей запис не зникне після закриття програми. Іншим учасникам він стане доступний після підтвердження Google.",
+      12,MUTED,false);
+    new AlertDialog.Builder(this).setTitle("Операція на телефоні")
+      .setView(view).setNegativeButton("Закрити",null)
+      .setPositiveButton("Черга синхронізації",(d,w)->go("queue")).show();
+  }
+
+  private String localTransactionStatus(LocalStore.Entry entry){
+    if(LocalStore.FAILED.equals(entry.status))return "⚠ Потрібна ваша увага";
+    if(LocalStore.AUTH.equals(entry.status))return "⚠ Потрібен повторний вхід";
+    if(LocalStore.SYNCED.equals(entry.status))return "✓ Передано в Google · оновлюємо журнал";
+    if(entry.ledger!=null&&!entry.ledger.isEmpty())
+      return "✓ Операція в Google · чеки передаються";
+    return "⟳ На синхронізації";
   }
 
   private void summary(LinearLayout row,String label,String amount,int bg,int ink){
