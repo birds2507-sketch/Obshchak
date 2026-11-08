@@ -1,15 +1,18 @@
 package ua.obshchak.mobile;
 
+import android.Manifest;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
@@ -59,6 +62,7 @@ public class MainActivity extends ComponentActivity {
   private String cameraTempPath="";
   private ActivityResultLauncher<Uri> cameraLauncher;
   private ActivityResultLauncher<String[]> pickerLauncher;
+  private ActivityResultLauncher<String> notificationPermissionLauncher;
   private boolean doingRequest=false;
   private String historyQuery="";
   private boolean historyWithoutReceipt=false;
@@ -73,6 +77,10 @@ public class MainActivity extends ComponentActivity {
 
   @Override protected void onCreate(Bundle b){
     super.onCreate(b);settings=new Settings(this);secure=new SecurePrefs(this);outbox=new LocalStore(this);
+    NotificationAlerts.prepare(this);
+    notificationPermissionLauncher=registerForActivityResult(new ActivityResultContracts.RequestPermission(),granted->{
+      message(granted?"Системні сповіщення дозволено":"Сповіщення вимкнені. Увімкніть їх у налаштуваннях Android.");
+    });
     cameraLauncher=registerForActivityResult(new ActivityResultContracts.TakePicture(),ok->{
       if(ok){try{Uri u=FileProvider.getUriForFile(this,getPackageName()+".files",new File(cameraTempPath));savedReceipt(u,"image/jpeg");}
       catch(Exception e){message(e.getMessage());}}
@@ -87,12 +95,46 @@ public class MainActivity extends ComponentActivity {
     try{state=new JSONObject(cache);}catch(Exception ignored){}
     if(b!=null){page=b.getString("page","home");formKind=b.getString("formKind","OUT");}
     if(settings.userId().isEmpty()||secure.token().isEmpty())page="login";
-    else {if(!secure.deviceToken().isEmpty()){
+    else {
+      String requested=getIntent()!=null?getIntent().getStringExtra("open_page"):"";
+      if("questions".equals(requested)||"history".equals(requested)||
+          "activity".equals(requested)||"votes".equals(requested))page=requested;
+      EventPollWorker.schedule(this);
+      if(!secure.deviceToken().isEmpty()){
         outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
-      }}
-    draw();if(!page.equals("login"))refresh();
+      }
+    }
+    draw();
+    if(!page.equals("login")){
+      refresh();
+      maybeAskNotificationPermission();
+    }
   }
   @Override protected void onResume(){super.onResume();pollHandler.postDelayed(pollTask,60000);}
+  @Override protected void onNewIntent(Intent intent){
+    super.onNewIntent(intent);setIntent(intent);
+    if(secure==null||secure.token().isEmpty())return;
+    String destination=intent.getStringExtra("open_page");
+    if("questions".equals(destination)||"history".equals(destination)||
+       "activity".equals(destination)||"votes".equals(destination)){
+      go(destination);refresh();
+    }
+  }
+
+  private void maybeAskNotificationPermission(){
+    if(Build.VERSION.SDK_INT<33||checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)return;
+    android.content.SharedPreferences p=getPreferences(MODE_PRIVATE);
+    if(p.getBoolean("asked_system_notifications",false))return;
+    p.edit().putBoolean("asked_system_notifications",true).apply();
+    new Handler(Looper.getMainLooper()).postDelayed(this::enableSystemNotifications,650);
+  }
+  private void enableSystemNotifications(){
+    NotificationAlerts.prepare(this);
+    EventPollWorker.schedule(this);
+    if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
+      notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
+    else message("Системні сповіщення увімкнені. Перевірка нових подій у фоні приблизно раз на 15 хвилин.");
+  }
   @Override protected void onPause(){pollHandler.removeCallbacks(pollTask);super.onPause();}
   @Override protected void onSaveInstanceState(Bundle b){saveDraft();b.putString("page",page);b.putString("formKind",formKind);super.onSaveInstanceState(b);}
   @Override protected void onDestroy(){pool.shutdown();super.onDestroy();}
@@ -204,6 +246,9 @@ public class MainActivity extends ComponentActivity {
     textInto(c,settings.username()+" · "+roleName(settings.role()),13,MUTED,false);
     textInto(c,"Підключення до Google: "+(settings.url().isEmpty()?"не налаштовано":"налаштовано"),12,MUTED,false);
     button(screen,"⚙ Змінити адресу Google (PIN)",this::askEndpointPin,false);
+    textInto(screen,"Системні сповіщення: "+(NotificationAlerts.enabled(this)?"дозволені":"потрібен дозвіл"),13,NotificationAlerts.enabled(this)?TEAL:MUTED,true);
+    button(screen,"🔔 Увімкнути системні сповіщення",this::enableSystemNotifications,false);
+    textInto(screen,"Фонова перевірка приблизно раз на 15 хвилин. Миттєві push потребують Firebase.",12,MUTED,false);
     button(screen,"⟳ Оновити дані",this::refresh,false);
     button(screen,"☁ Черга синхронізації",()->go("queue"),false);
     button(screen,"⇥ Вийти з облікового запису",this::logout,false);
@@ -230,7 +275,7 @@ public class MainActivity extends ComponentActivity {
           state=new JSONObject();
           getPreferences(MODE_PRIVATE).edit().putString("last_login",login).remove("last_state").apply();
           if(r.optBoolean("mustChange")){page="password";draw();}
-          else {page="home";draw();refresh();}
+          else {page="home";draw();EventPollWorker.schedule(this);maybeAskNotificationPermission();refresh();}
         }catch(Exception ex){message("Не вдалося зберегти сеанс: "+ex.getMessage());}
       });
     },true);
@@ -316,6 +361,7 @@ public class MainActivity extends ComponentActivity {
       secure.setDeviceToken(r.getString("deviceToken"));
       outbox.resumeAuth(settings.userId());outbox.resumeCommentAuth(settings.userId());
       QueueSyncWorker.schedule(this);
+      EventPollWorker.schedule(this);
       message("Синхронізацію підключено на 30 днів");
     }catch(Exception e){message("Помилка ключа синхронізації: "+e.getMessage());}});
   }
@@ -1086,6 +1132,7 @@ public class MainActivity extends ComponentActivity {
       String nextState=r.toString();
       boolean changed=!nextState.equals(state.toString());
       state=r;lastSuccessfulRefresh=android.os.SystemClock.elapsedRealtime();
+      NotificationAlerts.remember(this,settings.userId(),state.optJSONArray("events"));
       settings.initializeReadComments(settings.userId(),state.optJSONArray("comments"));
       int newUnread=unreadCount();
       if(newUnread>priorUnread)message("Нові повідомлення: "+(newUnread-priorUnread)+". Натисніть ✉ угорі.");
@@ -1099,6 +1146,7 @@ public class MainActivity extends ComponentActivity {
   private void logout(){
     JSONObject nothing=new JSONObject();String token=secure.token();
     // Local unsynced records stay tied to their owner. Never delete them on logout.
+    EventPollWorker.cancel(this);
     secure.clear();settings.clearUser();state=new JSONObject();getPreferences(MODE_PRIVATE).edit().remove("last_state").apply();
     page="login";draw();
     pool.execute(()->{try{new ApiClient(this).call("logout",nothing,token);}catch(Exception ignored){}});
