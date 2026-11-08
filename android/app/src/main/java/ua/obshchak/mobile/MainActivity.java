@@ -1117,8 +1117,16 @@ public class MainActivity extends ComponentActivity {
 
   private void drawHistory(){
     textInto(screen,"Операції",23,NAVY,true);
-    textInto(screen,"Локальні операції відразу показані зверху з позначкою ⟳. Підтверджені Google — без позначки.",
+    textInto(screen,"Локальні операції позначені ⟳ і доступні до завершення синхронізації.",
       12,MUTED,false);
+    LinearLayout periods=row();screen.addView(periods);
+    button(periods,historyForMonth?"✓ За місяць":"За місяць",()->{
+      historyForMonth=true;draw();
+    },historyForMonth);
+    button(periods,historyForMonth?"Усі дати":"✓ Усі дати",()->{
+      historyForMonth=false;draw();
+    },!historyForMonth);
+    if(historyForMonth)drawMonthBar();
     if(isCashier()){
       LinearLayout actions=row();screen.addView(actions);
       button(actions,"＋ Прихід",()->{formKind="IN";go("form");},true);
@@ -1161,6 +1169,7 @@ public class MainActivity extends ComponentActivity {
     int matched=0,expensesCount=0,withoutReceiptCount=0,localMatches=0;
     long expensesCents=0L,withoutReceiptCents=0L;
     for(CashLedgerPreview.Row row:preview.rows){
+      if(historyForMonth&&!row.tx.optString("date").startsWith(selectedMonth))continue;
       String kind=row.kind();
       int receiptCount=row.isLocal()?row.localReceiptCount():
         receiptCounts.getOrDefault(row.id(),0);
@@ -1197,6 +1206,8 @@ public class MainActivity extends ComponentActivity {
     if(!historyWithoutReceipt)
       textInto(summary,"Витрат: "+expensesCount+" · Без чеків: "+withoutReceiptCount+
         " на "+money(withoutReceiptCents)+" ₴",12,MUTED,false);
+    if(historyForMonth)
+      textInto(summary,"Період: "+monthTitle()+" · оперативний облік",11,MUTED,false);
     if(localMatches>0)
       textInto(summary,"⟳ Локальних операцій у вибірці: "+localMatches+
         " · включені в оперативні розрахунки, але ще не в загальний Google-звіт.",
