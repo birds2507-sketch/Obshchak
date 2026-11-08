@@ -48,7 +48,6 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -71,6 +70,7 @@ public class MainActivity extends ComponentActivity {
   private String historyQuery="";
   private boolean historyWithoutReceipt=false;
   private final Set<UUID> completedSyncJobs=new HashSet<>();
+  private boolean hasInitializedSyncObserver=false;
   private long lastSuccessfulRefresh=0L;
   private int endpointPinFailures=0;
   private long endpointPinBlockedUntil=0L;
@@ -116,7 +116,7 @@ public class MainActivity extends ComponentActivity {
     draw();
     observeSyncCompletion();
     if(!page.equals("login")){
-      refresh();
+      if(!doingRequest)refresh();
       maybeAskNotificationPermission();
     }
   }
@@ -135,6 +135,12 @@ public class MainActivity extends ComponentActivity {
     WorkManager.getInstance(this).getWorkInfosForUniqueWorkLiveData("obshchak_sync")
       .observe(this,infos->{
         if(infos==null||infos.isEmpty())return;
+        if(!hasInitializedSyncObserver){
+          hasInitializedSyncObserver=true;
+          for(WorkInfo info:infos)
+            if(info.getState().isFinished())completedSyncJobs.add(info.getId());
+          return;
+        }
         boolean finishedNew=false;
         for(WorkInfo info:infos){
           if(info.getState().isFinished()&&completedSyncJobs.add(info.getId()))
