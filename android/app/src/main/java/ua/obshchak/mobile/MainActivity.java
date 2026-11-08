@@ -102,6 +102,7 @@ public class MainActivity extends ComponentActivity {
       EventPollWorker.schedule(this);
       if(!secure.deviceToken().isEmpty()){
         outbox.resumeAuth(settings.userId());QueueSyncWorker.schedule(this);
+        FirebaseBridge.register(this);
       }
     }
     draw();
@@ -110,7 +111,11 @@ public class MainActivity extends ComponentActivity {
       maybeAskNotificationPermission();
     }
   }
-  @Override protected void onResume(){super.onResume();pollHandler.postDelayed(pollTask,60000);}
+  @Override protected void onResume(){
+    super.onResume();
+    pollHandler.postDelayed(pollTask,60000);
+    if(secure!=null && !secure.token().isEmpty())FirebaseBridge.register(this);
+  }
   @Override protected void onNewIntent(Intent intent){
     super.onNewIntent(intent);setIntent(intent);
     if(secure==null||secure.token().isEmpty())return;
@@ -247,6 +252,9 @@ public class MainActivity extends ComponentActivity {
     textInto(c,"Підключення до Google: "+(settings.url().isEmpty()?"не налаштовано":"налаштовано"),12,MUTED,false);
     button(screen,"⚙ Змінити адресу Google (PIN)",this::askEndpointPin,false);
     textInto(screen,"Системні сповіщення: "+(NotificationAlerts.enabled(this)?"дозволені":"потрібен дозвіл"),13,NotificationAlerts.enabled(this)?TEAL:MUTED,true);
+    textInto(screen,FirebaseBridge.configured()?
+      "Миттєві push: Firebase налаштовано у APK (потрібно також налаштувати Google Apps Script)":
+      "Миттєві push: не підключено. Потрібні параметри Firebase у збірці.",12,MUTED,false);
     button(screen,"🔔 Увімкнути системні сповіщення",this::enableSystemNotifications,false);
     textInto(screen,"Фонова перевірка приблизно раз на 15 хвилин. Миттєві push потребують Firebase.",12,MUTED,false);
     button(screen,"⟳ Оновити дані",this::refresh,false);
@@ -362,6 +370,7 @@ public class MainActivity extends ComponentActivity {
       outbox.resumeAuth(settings.userId());outbox.resumeCommentAuth(settings.userId());
       QueueSyncWorker.schedule(this);
       EventPollWorker.schedule(this);
+      FirebaseBridge.register(this);
       message("Синхронізацію підключено на 30 днів");
     }catch(Exception e){message("Помилка ключа синхронізації: "+e.getMessage());}});
   }
@@ -1146,6 +1155,7 @@ public class MainActivity extends ComponentActivity {
   private void logout(){
     JSONObject nothing=new JSONObject();String token=secure.token();
     // Local unsynced records stay tied to their owner. Never delete them on logout.
+    FirebaseBridge.unregister(this,secure.deviceToken());
     EventPollWorker.cancel(this);
     secure.clear();settings.clearUser();state=new JSONObject();getPreferences(MODE_PRIVATE).edit().remove("last_state").apply();
     page="login";draw();
