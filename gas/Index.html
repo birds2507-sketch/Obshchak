@@ -86,7 +86,9 @@ function debtStatus(status){
   return ({REQUESTED:'Очікує касира',APPROVED:'Погоджено · очікує виплати',
     PAID_PENDING_CONFIRMATION:'Виплачено · очікує отримувача',
     CONFIRMED:'✓ Гроші отримано',REJECTED:'Відхилено',
-    PAYMENT_DISPUTED:'⚠ Гроші не отримано'})[status]||status;
+    PAYMENT_DISPUTED:'⚠ Гроші не отримано',
+    APPEALED:'⚖ Касир подав апеляцію',
+    ADMIN_CONFIRMED_PAYMENT:'⚖ Виплату підтвердив адміністратор (не отримувач)'})[status]||status;
 }
 function debtsPage(){
   const claims=A.state.reimbursements||[];
@@ -118,7 +120,7 @@ function debtsPage(){
   for(const r of claims){
     const mine=r.requester_id===A.state.me.id;
     const pending=r.status==='REQUESTED',approved=r.status==='APPROVED';
-    const awaiting=['PAID_PENDING_CONFIRMATION','PAYMENT_DISPUTED'].includes(r.status);
+    const awaiting=['PAID_PENDING_CONFIRMATION','PAYMENT_DISPUTED','APPEALED'].includes(r.status);
     html+=`<details class="rowitem" style="display:block">
       <summary style="cursor:pointer"><strong>${esc(nameOf(r.requester_id))} · ${euro(r.amount)}</strong>
         <span class="tag">${esc(debtStatus(r.status))}</span>
@@ -131,6 +133,21 @@ function debtsPage(){
         ${r.confirmed_by?`<p class="status">Отримання підтвердив: ${esc(nameOf(r.confirmed_by))}</p>`:''}
         ${r.rejection_reason?`<p class="status warn">Відмовлено: ${esc(r.rejection_reason)}</p>`:''}
         ${r.dispute_reason?`<p class="status warn">⚠ Не отримав: ${esc(r.dispute_reason)}</p>`:''}
+        ${r.appeal_reason?`<p class="status warn">⚖ Апеляція касира ${esc(nameOf(r.appeal_by))}
+          (${stamp(r.appeal_at)}): ${esc(r.appeal_reason)}</p>`:''}
+        ${r.appeal_decision?`<p class="status ${r.appeal_decision==='UPHOLD_CASHIER'?'':'warn'}">
+          Рішення адміністратора: ${r.appeal_decision==='UPHOLD_CASHIER'?
+            'Підтверджено виплату касиром (НЕ підтвердження Сергія)':'Апеляцію касира відхилено'}.
+          ${esc(r.appeal_decision_reason)} · ${esc(nameOf(r.appeal_decided_by))}
+          · ${stamp(r.appeal_decided_at)}</p>`:''}
+        ${cashier()&&r.status==='PAYMENT_DISPUTED'&&r.paid_by===A.state.me.id&&!r.appeal_at?
+          `<button class="btn sm secondary" data-act="debt-appeal" data-id="${esc(r.id)}">
+          ⚖ Оскаржити заперечення перед адміністратором</button>`:''}
+        ${admin()&&r.status==='APPEALED'&&r.paid_by!==A.state.me.id&&r.requester_id!==A.state.me.id?
+          `<button class="btn sm primary" data-act="debt-appeal-uphold" data-id="${esc(r.id)}">
+          ✓ Підтвердити виплату касиром</button>
+          <button class="btn sm danger" data-act="debt-appeal-reject" data-id="${esc(r.id)}">
+          ✕ Відхилити апеляцію</button>`:''}
         ${cashier()&&!mine&&pending?`
           <button class="btn sm primary" data-act="debt-approve" data-id="${esc(r.id)}">✓ Погодити борг</button>
           <button class="btn sm danger" data-act="debt-reject" data-id="${esc(r.id)}">Відхилити</button>`:''}
@@ -366,6 +383,24 @@ else if(act==='debt-dispute'){
   let reason=prompt('Опишіть, чому гроші не отримано');if(reason===null)return;
   if(!reason.trim())throw new Error('Потрібно вказати причину');
   await handler('confirmReimbursement',{id:button.dataset.id,received:'NO',reason:reason.trim()},'Заперечення виплати бачать усі.');
+}
+else if(act==='debt-appeal'){
+  const reason=prompt('Як саме і коли ви передали гроші? Додайте обставини або свідків.');
+  if(reason===null)return;
+  if(reason.trim().length<10)throw new Error('Пояснення має містити щонайменше 10 символів');
+  if(!confirm('Подати апеляцію адміністратору? Усі бачитимуть її, баланс не змінюється.'))return;
+  await handler('appealReimbursement',{id:button.dataset.id,reason:reason.trim()},'Апеляцію подано на розгляд.');
+}
+else if(act==='debt-appeal-uphold'||act==='debt-appeal-reject'){
+  const reason=prompt('Обґрунтуйте рішення адміністратора (щонайменше 10 символів)');
+  if(reason===null)return;
+  if(reason.trim().length<10)throw new Error('Потрібні мотиви рішення (мінімум 10 символів)');
+  const uphold=act==='debt-appeal-uphold';
+  if(!confirm(uphold?'Підтвердити виплату за власним рішенням, НЕ від імені учасника?':
+    'Відхилити апеляцію касира й залишити спір відкритим?'))return;
+  await handler('decideReimbursementAppeal',{
+    id:button.dataset.id,decision:uphold?'UPHOLD_CASHIER':'REJECT_APPEAL',reason:reason.trim()
+  },'Рішення адміністратора опубліковано для всіх.');
 }
 else if(act==='receipt'){let r=await invoke('getReceipt',{id:button.dataset.id});A.preview={name:r.name,mime:r.mime,url:saveBlob(r)};render();}
 else if(act==='close-preview'){if(ev.target!==button && button.tagName!=='BUTTON')return;if(A.preview?.url)URL.revokeObjectURL(A.preview.url);A.preview=null;render();}
