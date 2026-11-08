@@ -297,7 +297,8 @@ public class MainActivity extends ComponentActivity {
     textInto(c,"Обліковий запис",15,NAVY,true);
     textInto(c,settings.username()+" · "+roleName(settings.role()),13,MUTED,false);
     textInto(c,"Підключення до Google: "+(settings.url().isEmpty()?"не налаштовано":"налаштовано"),12,MUTED,false);
-    button(screen,"⚙ Змінити адресу Google (PIN)",this::askEndpointPin,false);
+    button(screen,"🔑 Змінити особистий PIN / пароль",this::showPersonalPasswordDialog,false);
+    button(screen,"⚙ Змінити адресу Google (PIN налаштувань)",this::askEndpointPin,false);
     textInto(screen,"Системні сповіщення: "+(NotificationAlerts.enabled(this)?"дозволені":"потрібен дозвіл"),13,NotificationAlerts.enabled(this)?TEAL:MUTED,true);
     textInto(screen,FirebaseBridge.configured()?
       "Миттєві push: Firebase налаштовано у APK (потрібно також налаштувати Google Apps Script)":
@@ -422,9 +423,10 @@ public class MainActivity extends ComponentActivity {
     }catch(Exception e){message("Помилка ключа синхронізації: "+e.getMessage());}});
   }
   private void drawChangePassword(){
-    textInto(screen,"Перший вхід: змініть пароль",21,NAVY,true);
+    textInto(screen,"Перший вхід: встановіть особистий PIN або пароль",21,NAVY,true);
     EditText old=input(screen,"Тимчасовий пароль","",true);
-    EditText fresh=input(screen,"Новий пароль (12+ символів, літери й цифри)","",true);
+    EditText fresh=input(screen,"Новий PIN (4 цифри) або довгий пароль","",true);
+    textInto(screen,"Для PIN не використовуйте 1234, 0000 або 5618. Після 5 невдалих входів доступ тимчасово блокується.",12,MUTED,false);
     button(screen,"Змінити пароль",()->{
       JSONObject d=new JSONObject();try{d.put("old",old.getText().toString());d.put("fresh",fresh.getText().toString());}catch(Exception ignored){}
       remote("changePassword",d,secure.token(),r->{secure.clear();settings.clearUser();page="login";draw();message("Пароль змінено. Увійдіть ще раз.");});
@@ -831,9 +833,6 @@ public class MainActivity extends ComponentActivity {
     EditText purpose=fields.get("purpose");
     if(purpose!=null){purpose.setMinHeight(dp(58));purpose.setHint("Коротко: на що витрачено кошти");}
 
-    drawMethodChoices(draft.optString("method",getPreferences(MODE_PRIVATE).getString("last_payment_"+formKind,"CASH")),
-      expense?"Спосіб оплати":"Спосіб отримання");
-
     if(expense){
       spacer(screen,5);
       textInto(screen,"Чек / підтвердження",15,NAVY,true);
@@ -894,44 +893,6 @@ public class MainActivity extends ComponentActivity {
       ()->queueForm(true),false);
     textInto(screen,"Операція одразу потрапляє в касу на телефоні. Google синхронізується у фоні.",
       12,MUTED,false);
-  }
-
-  private void drawMethodChoices(String initial,String title){
-    textInto(screen,title,13,MUTED,true);
-    LinearLayout area=row();screen.addView(area,new LinearLayout.LayoutParams(-1,dp(61)));
-    String[] selected={initial.equals("BANK")?"BANK":"CASH"};
-    // A remembered payment method must be persisted even if the cashier
-    // immediately saves without touching the method controls.
-    JSONObject selectionDraft=settings.getDraft(formKind);
-    if(!selectionDraft.has("method")){
-      try{selectionDraft.put("method",selected[0]);settings.saveDraft(formKind,selectionDraft);}
-      catch(Exception ignored){}
-    }
-    TextView cash=text("▣ Готівка",14,NAVY,true);
-    TextView bank=text("▤ Картка",14,NAVY,true);
-    cash.setGravity(Gravity.CENTER);bank.setGravity(Gravity.CENTER);
-    LinearLayout.LayoutParams lp1=new LinearLayout.LayoutParams(0,dp(49),1f);
-    lp1.setMargins(0,0,dp(3),0);
-    LinearLayout.LayoutParams lp2=new LinearLayout.LayoutParams(0,dp(49),1f);
-    lp2.setMargins(dp(3),0,0,0);
-    area.addView(cash,lp1);area.addView(bank,lp2);
-    Runnable render=()->{
-      cash.setBackground(background(selected[0].equals("CASH")?0xffdff7e7:Color.WHITE,13));
-      bank.setBackground(background(selected[0].equals("BANK")?0xffdff7e7:Color.WHITE,13));
-      cash.setTextColor(selected[0].equals("CASH")?0xff007748:NAVY);
-      bank.setTextColor(selected[0].equals("BANK")?0xff007748:NAVY);
-    };
-    cash.setOnClickListener(v->{selected[0]="CASH";saveDraft();
-      JSONObject draft=settings.getDraft(formKind);
-      try{draft.put("method","CASH");settings.saveDraft(formKind,draft);}catch(Exception ignored){}
-      render.run();
-    });
-    bank.setOnClickListener(v->{selected[0]="BANK";saveDraft();
-      JSONObject draft=settings.getDraft(formKind);
-      try{draft.put("method","BANK");settings.saveDraft(formKind,draft);}catch(Exception ignored){}
-      render.run();
-    });
-    render.run();
   }
 
   private void expenseCategoryField(String selected){
@@ -1021,15 +982,12 @@ public class MainActivity extends ComponentActivity {
       message("Вкажіть категорію витрати");return;}
     try {
       JSONObject tx=new JSONObject();tx.put("kind",formKind);tx.put("date",d.getString("date"));tx.put("amount",amount.replace(',','.'));
-      tx.put("purpose",purpose);if(formKind.equals("IN")){tx.put("method",d.optString("method","CASH"));tx.put("personName",d.optString("personName"));}
+      tx.put("purpose",purpose);if(formKind.equals("IN")){tx.put("personName",d.optString("personName"));}
       else {tx.put("category",d.optString("category"));
-        tx.put("method",d.optString("method","CASH"));
         tx.put("noReceiptReason",files.length()>0?"Чек збережений на телефоні; очікується синхронізація":d.optString("noReceiptReason"));}
       String id=UUID.randomUUID().toString();JSONObject envelope=new JSONObject();envelope.put("tx",tx);envelope.put("files",files);
       outbox.add(id,settings.userId(),envelope.toString());
       if("OUT".equals(formKind))ExpenseCategoryPicker.record(this,d.optString("category"));
-      getPreferences(MODE_PRIVATE).edit()
-        .putString("last_payment_"+formKind,d.optString("method","CASH")).apply();
       settings.clearDraft(formKind);
       if(another){
         // A fresh form, same operation type, without waiting for a Google response.
@@ -1536,7 +1494,7 @@ public class MainActivity extends ComponentActivity {
   private void go(String target){page=target;draw();}
   private static String today(){return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());}
   private static String money(long cents){return String.format(new Locale("uk","UA"),"%,.2f",cents/100.0);}
-  private static String roleName(String role){return role.equals("CASHIER")?"Касир":role.equals("RESERVE")?"Резервний адміністратор":"Учасник";}
+  private static String roleName(String role){return role.equals("CASHIER")?"Касир":(role.equals("ADMIN")||role.equals("RESERVE"))?"Адміністратор":"Учасник";}
   private void prompt(String title,java.util.function.Consumer<String> cb){EditText e=new EditText(this);
     new AlertDialog.Builder(this).setTitle(title).setView(e).setNegativeButton("Скасувати",null)
       .setPositiveButton("Готово",(d,w)->cb.accept(e.getText().toString())).show();}
