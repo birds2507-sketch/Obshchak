@@ -69,7 +69,7 @@ public class MainActivity extends ComponentActivity {
   private Settings settings;private SecurePrefs secure;private LocalStore outbox;private final ExecutorService pool=Executors.newSingleThreadExecutor();
   private LinearLayout screen, content;private JSONObject state=new JSONObject();private String page="home";
   private String formKind="OUT";private final Map<String,EditText> fields=new HashMap<>();
-  private Spinner methodSpinner;private TextView filesLabel;private String receiptForLedger="";
+  private TextView filesLabel;private String receiptForLedger="";
   private String cameraTempPath="";
   private ActivityResultLauncher<Uri> cameraLauncher;
   private ActivityResultLauncher<String[]> pickerLauncher;
@@ -802,7 +802,7 @@ public class MainActivity extends ComponentActivity {
   private boolean isCashier(){return settings.role().equals("CASHIER");}
   private void drawForm(){
     if(!isCashier()){message("Фінансові операції може додавати лише касир");go("home");return;}
-    fields.clear();methodSpinner=null;filesLabel=null;receiptPreview=null;
+    fields.clear();filesLabel=null;receiptPreview=null;
     JSONObject draft=settings.getDraft(formKind);
     if(draft.optString("date").isEmpty()){
       try{draft.put("date",today());settings.saveDraft(formKind,draft);}catch(Exception ignored){}
@@ -931,7 +931,6 @@ public class MainActivity extends ComponentActivity {
   private synchronized void saveDraft(){if(!page.equals("form"))return;
     JSONObject d=settings.getDraft(formKind);try{
       for(Map.Entry<String,EditText> e:fields.entrySet())d.put(e.getKey(),e.getValue().getText().toString());
-      if(methodSpinner!=null&&formKind.equals("IN"))d.put("method",methodSpinner.getSelectedItemPosition()==1?"BANK":"CASH");
       settings.saveDraft(formKind,d);
     }catch(Exception ignored){}
   }
