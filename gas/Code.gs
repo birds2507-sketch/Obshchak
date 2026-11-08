@@ -40,7 +40,12 @@ function doPost(e) {
     if (!packet || typeof packet.action !== 'string') throw new Error('Не вказана дія');
     // Login does not require token; all other calls pass through existing auth_ and role checks.
     var result;
-    if (packet.action==='deviceEvents') {
+    if(packet.action==='registerPush' || packet.action==='unregisterPush'){
+      // Device-scoped authorization: a member may register only their own device.
+      var pushUser=authDevice_(String(packet.token||''));
+      result=withLock_(function(){return packet.action==='registerPush' ?
+        registerPush_(pushUser,packet.data||{}):unregisterPush_(pushUser,packet.data||{});});
+    } else if (packet.action==='deviceEvents') {
       // Device key is tied to an active member and expires automatically.
       // Return only event metadata; no private account or receipt files.
       authDevice_(String(packet.token||''));
@@ -237,7 +242,149 @@ function requireRole_(user,roles){if(roles.indexOf(user.role)<0)throw new Error(
 function withLock_(callback){var lock=LockService.getScriptLock();lock.waitLock(25000);try{return callback();}finally{lock.releaseLock();}}
 function publicUser_(u){return {id:u.id,login:u.login,name:u.name,role:u.role,active:u.active==='1'};}
 function logAudit_(by,action,details){append_('Audit',[Utilities.getUuid(),now_(),by,action,text_(details,1000)]);}
-function event_(type,summary,by,ref){append_('Events',[Utilities.getUuid(),type,text_(summary,450),now_(),by,ref||'']);}
+/** Push device tokens are credentials to receive alerts, never account authentication. */
+function pushSheet_(){
+  var book=db_(),sheet=book.getSheetByName('PushTokens');
+  if(!sheet){
+    sheet=book.insertSheet('PushTokens');
+    sheet.appendRow(['id','user_id','device_id','fcm_token','active','created_at']);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+function registerPush_(user,data){
+  var deviceId=String(data.deviceId||''),token=String(data.fcmToken||'');
+  if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(deviceId))throw new Error('Невірний ID телефону');
+  if(!/^[A-Za-z0-9_:.-]{30,4096}$/.test(token))throw new Error('Невірний токен Firebase');
+  var sheet=pushSheet_(),rows=sheet.getDataRange().getDisplayValues();
+  for(var i=1;i<rows.length;i++){
+    if(rows[i][2]===deviceId && rows[i][1]===user.id &&
+       rows[i][3]===token && rows[i][4]==='1')return {ok:true,alreadyRegistered:true};
+    // Prevent messages for another account or an outdated FCM registration.
+    if((rows[i][2]===deviceId || rows[i][3]===token) && rows[i][4]==='1')
+      sheet.getRange(i+1,5).setValue('0');
+  }
+  append_('PushTokens',[Utilities.getUuid(),user.id,deviceId,token,'1',now_()]);
+  return {ok:true};
+}
+function unregisterPush_(user,data){
+  var deviceId=String(data.deviceId||'');
+  if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(deviceId))throw new Error('Невірний ID телефону');
+  var sheet=db_().getSheetByName('PushTokens');
+  if(!sheet)return {ok:true};
+  var rows=sheet.getDataRange().getDisplayValues();
+  for(var i=1;i<rows.length;i++)
+    if(rows[i][1]===user.id && rows[i][2]===deviceId && rows[i][4]==='1')
+      sheet.getRange(i+1,5).setValue('0');
+  return {ok:true};
+}
+
+/** A service-account JSON belongs in Script Properties as FCM_SERVICE_ACCOUNT_JSON.
+ * Do not put it into GitHub, Android, HTML or client-visible APIs.
+ */
+function fcmServiceAccount_(){
+  var raw=PropertiesService.getScriptProperties().getProperty('FCM_SERVICE_ACCOUNT_JSON');
+  if(!raw)return null;
+  var sa=JSON.parse(raw);
+  if(!sa.client_email||!sa.private_key||!sa.project_id)
+    throw new Error('Incomplete FCM_SERVICE_ACCOUNT_JSON in Script Properties');
+  return sa;
+}
+function fcmBase64Url_(value){
+  return Utilities.base64EncodeWebSafe(Utilities.newBlob(value).getBytes()).replace(/=+$/,'');
+}
+function fcmAccessToken_(sa){
+  var cache=CacheService.getScriptCache();
+  var previous=cache.get('OBSHCHAK_FCM_OAUTH');
+  if(previous)return previous;
+  var seconds=Math.floor(Date.now()/1000);
+  var head=fcmBase64Url_(JSON.stringify({alg:'RS256',typ:'JWT'}));
+  var claim=fcmBase64Url_(JSON.stringify({
+    iss:sa.client_email,
+    scope:'https://www.googleapis.com/auth/firebase.messaging',
+    aud:'https://oauth2.googleapis.com/token',
+    iat:seconds,
+    exp:seconds+3500
+  }));
+  var unsigned=head+'.'+claim;
+  var signature=Utilities.base64EncodeWebSafe(
+    Utilities.computeRsaSha256Signature(unsigned,sa.private_key)).replace(/=+$/,'');
+  var response=UrlFetchApp.fetch('https://oauth2.googleapis.com/token',{
+    method:'post',
+    payload:{grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion:unsigned+'.'+signature},
+    muteHttpExceptions:true
+  });
+  if(response.getResponseCode()!==200)
+    throw new Error('FCM OAuth authorization failed (HTTP '+response.getResponseCode()+')');
+  var answer=JSON.parse(response.getContentText());
+  if(!answer.access_token)throw new Error('No FCM OAuth access token');
+  cache.put('OBSHCHAK_FCM_OAUTH',answer.access_token,3300);
+  return answer.access_token;
+}
+
+/** A safe diagnostic which doesn't send messages or modify the accounting database. */
+function checkFirebasePush_(){
+  var sa=fcmServiceAccount_();
+  if(!sa){Logger.log('Firebase not configured: set FCM_SERVICE_ACCOUNT_JSON');return;}
+  var token=fcmAccessToken_(sa);
+  Logger.log('Firebase service account authorized: '+sa.client_email+'; token ready: '+Boolean(token));
+}
+
+/** A notification failure may never roll back or duplicate a ledger operation. */
+function sendFirebaseEvent_(eventId,type,summary,actorId){
+  if(['TRANSACTION','CORRECTION','RECEIPT','COMMENT','ELECTION','HANDOVER'].indexOf(type)<0)return;
+  var sa=fcmServiceAccount_();
+  if(!sa)return; // The old 15-minute notification polling remains available.
+  var sheet=db_().getSheetByName('PushTokens');
+  if(!sheet)return;
+  var rows=sheet.getDataRange().getDisplayValues();
+  if(rows.length<2)return;
+  var recipients={},active={};
+  all_('Users').forEach(function(u){if(u.active==='1')active[u.id]=true;});
+  rows.slice(1).forEach(function(row){
+    if(row[4]==='1'&&active[row[1]]&&row[1]!==actorId)
+      recipients[row[3]]={user_id:row[1],token:row[3]};
+  });
+  var tokens=Object.keys(recipients);
+  if(!tokens.length)return;
+  var oauth=fcmAccessToken_(sa);
+  var endpoint='https://fcm.googleapis.com/v1/projects/'+encodeURIComponent(sa.project_id)+'/messages:send';
+  // Data-only messages always invoke the Android FirebaseMessagingService.
+  // No check/photo/user credentials are ever embedded in a push.
+  var requests=tokens.map(function(key){
+    var row=recipients[key];
+    return {
+      url:endpoint,
+      method:'post',
+      contentType:'application/json',
+      headers:{Authorization:'Bearer '+oauth},
+      muteHttpExceptions:true,
+      payload:JSON.stringify({message:{
+        token:row.token,
+        data:{
+          event_id:eventId,
+          user_id:row.user_id,
+          type:type,
+          summary:text_(summary,160)
+        },
+        android:{priority:'HIGH',ttl:'3600s'}
+      }})
+    };
+  });
+  var responses=UrlFetchApp.fetchAll(requests);
+  responses.forEach(function(r){
+    if(r.getResponseCode()>=300)
+      console.warn('FCM send response HTTP '+r.getResponseCode());
+  });
+}
+function event_(type,summary,by,ref){
+  var id=Utilities.getUuid();
+  append_('Events',[id,type,text_(summary,450),now_(),by,ref||'']);
+  try{sendFirebaseEvent_(id,type,summary,by);}catch(error){
+    console.warn('Non-fatal FCM delivery problem: '+String(error));
+  }
+}
+
 
 function state_(user) {
   var ledger=all_('Ledger'), receipts=all_('Receipts'), elections=all_('Elections'), ballots=all_('Ballots');
