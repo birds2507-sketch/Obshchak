@@ -293,7 +293,7 @@ function peoplePage(){
         if(u.role==='MEMBER'){
           if(u.active)html+='<button class="btn sm primary" data-act="assign-cashier" data-id="'+esc(u.id)+'">Призначити касиром</button>';
           html+='<button class="btn sm" data-act="toggle" data-id="'+esc(u.id)+'">'+(u.active?'Заблокувати':'Відновити')+'</button>';
-          if(u.active)html+='<button class="btn sm danger" data-act="remove-user" data-id="'+esc(u.id)+'">Вилучити</button>';
+          html+='<button class="btn sm danger" data-act="remove-user" data-id="'+esc(u.id)+'">Вилучити</button>';
         }
       }
       html+='</div>';
