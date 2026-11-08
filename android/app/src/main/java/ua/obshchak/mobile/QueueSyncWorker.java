@@ -7,6 +7,7 @@ import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.NetworkType;
+import androidx.work.OutOfQuotaPolicy;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
@@ -24,7 +25,9 @@ public class QueueSyncWorker extends Worker {
   static void schedule(Context c){
     Constraints constraints=new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
     OneTimeWorkRequest request=new OneTimeWorkRequest.Builder(QueueSyncWorker.class)
-        .setConstraints(constraints).setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();
+        .setConstraints(constraints)
+        .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();
     WorkManager.getInstance(c).enqueueUniqueWork("obshchak_sync",ExistingWorkPolicy.APPEND_OR_REPLACE,request);
   }
   @NonNull @Override public Result doWork(){
