@@ -2,6 +2,7 @@ package ua.obshchak.mobile;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.app.DatePickerDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -27,6 +28,8 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.ImageView;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -46,6 +49,10 @@ import java.io.FileOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.time.YearMonth;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.TimeZone;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
@@ -69,6 +76,9 @@ public class MainActivity extends ComponentActivity {
   private boolean doingRequest=false;
   private String historyQuery="";
   private boolean historyWithoutReceipt=false;
+  private boolean historyForMonth=true;
+  private String selectedMonth=YearMonth.now(ZoneId.of("Europe/Kyiv")).toString();
+  private LinearLayout receiptPreview;
   private final Set<UUID> completedSyncJobs=new HashSet<>();
   private boolean hasInitializedSyncObserver=false;
   private long lastSuccessfulRefresh=0L;
@@ -425,65 +435,139 @@ public class MainActivity extends ComponentActivity {
     return CashLedgerPreview.build(state,outbox.recentTransactions(settings.userId()));
   }
 
+  private static final String[] MONTH_NAMES={
+    "Січень","Лютий","Березень","Квітень","Травень","Червень",
+    "Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"
+  };
+  private String monthTitle(){
+    YearMonth m=YearMonth.parse(selectedMonth);
+    return MONTH_NAMES[m.getMonthValue()-1]+" "+m.getYear();
+  }
+  private void changeMonth(int shift){
+    selectedMonth=YearMonth.parse(selectedMonth).plusMonths(shift).toString();
+    draw();
+  }
+  private void selectMonth(){
+    YearMonth ym=YearMonth.parse(selectedMonth);
+    String[] options=new String[13];
+    for(int i=0;i<12;i++)options[i]=MONTH_NAMES[i]+" "+ym.getYear();
+    options[12]="Повернутися до поточного місяця";
+    new AlertDialog.Builder(this).setTitle("Виберіть місяць").setItems(options,(d,index)->{
+      if(index==12)selectedMonth=YearMonth.now(ZoneId.of("Europe/Kyiv")).toString();
+      else selectedMonth=YearMonth.of(ym.getYear(),index+1).toString();
+      draw();
+    }).show();
+  }
+  private void drawMonthBar(){
+    LinearLayout outer=card(screen);
+    outer.setPadding(dp(7),dp(4),dp(7),dp(4));
+    LinearLayout nav=row();outer.addView(nav,new LinearLayout.LayoutParams(-1,dp(43)));
+    TextView prev=text("‹",30,NAVY,true);prev.setGravity(Gravity.CENTER);
+    nav.addView(prev,new LinearLayout.LayoutParams(dp(43),-1));
+    prev.setContentDescription("Попередній місяць");
+    prev.setOnClickListener(v->changeMonth(-1));
+    TextView middle=text("▦  "+monthTitle()+"  ▾",16,NAVY,true);
+    middle.setGravity(Gravity.CENTER);middle.setSingleLine(true);
+    nav.addView(middle,new LinearLayout.LayoutParams(0,-1,1f));
+    middle.setOnClickListener(v->selectMonth());
+    TextView next=text("›",30,NAVY,true);next.setGravity(Gravity.CENTER);
+    nav.addView(next,new LinearLayout.LayoutParams(dp(43),-1));
+    next.setContentDescription("Наступний місяць");
+    next.setOnClickListener(v->changeMonth(1));
+  }
+  private void drawMetric(LinearLayout parent,String label,String value,int color,int textColor,
+                          String subtitle){
+    LinearLayout box=new LinearLayout(this);
+    box.setOrientation(LinearLayout.VERTICAL);
+    box.setPadding(dp(7),dp(12),dp(5),dp(10));
+    box.setBackground(background(color,13));
+    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(104),1f);
+    lp.setMargins(dp(2),dp(1),dp(2),dp(4));parent.addView(box,lp);
+    TextView headline=text(label,12,NAVY,true);
+    headline.setMinLines(2);box.addView(headline);
+    TextView number=text(value,17,textColor,true);
+    number.setSingleLine(true);
+    number.setAutoSizeTextTypeUniformWithConfiguration(12,18,1,TextView.AUTO_SIZE_TEXT_TYPE_UNIFORM);
+    box.addView(number,new LinearLayout.LayoutParams(-1,dp(30)));
+    if(!subtitle.isEmpty())textInto(box,subtitle,10,MUTED,false);
+  }
+
   private void drawHome(){
     CashLedgerPreview preview=cashPreview();
-    boolean pending=preview.localCount>0;
-    LinearLayout balance=card(screen);
-    balance.setBackground(background(0xff2165c6,20));
-    balance.setPadding(dp(20),dp(18),dp(18),dp(18));
-    textInto(balance,pending?"ОПЕРАТИВНИЙ ЗАЛИШОК":"ЗАГАЛЬНИЙ ЗАЛИШОК",14,0xffdce9ff,true);
-    textInto(balance,money(preview.operationalBalance)+" ₴",33,Color.WHITE,true);
-    if(pending){
-      textInto(balance,"Підтверджено Google: "+money(preview.confirmedBalance)+" ₴",14,Color.WHITE,true);
-      long difference=preview.operationalBalance-preview.confirmedBalance;
-      textInto(balance,"Локальні операції: "+(difference>=0?"+":"−")+
-          money(Math.abs(difference))+" ₴ · "+preview.localCount+" у синхронізації",
-          12,0xffe7f1ff,false);
+    MonthlyCashSummary month=MonthlyCashSummary.calculate(
+      preview,selectedMonth,state.optJSONArray("ledger")!=null);
+    drawMonthBar();
+
+    // Compact one-line balance, using the *selected month's* end balance.
+    LinearLayout cashCard=card(screen);
+    cashCard.setBackground(background(0xff075e59,16));
+    cashCard.setPadding(dp(12),dp(10),dp(12),dp(9));
+    LinearLayout cashRow=row();cashCard.addView(cashRow,new LinearLayout.LayoutParams(-1,dp(51)));
+    TextView coin=text("₴",21,Color.WHITE,true);
+    coin.setGravity(Gravity.CENTER);coin.setBackground(background(0xff0a955f,28));
+    cashRow.addView(coin,new LinearLayout.LayoutParams(dp(42),dp(42)));
+    TextView amount=text("Залишок: "+money(month.closing)+" ₴",25,Color.WHITE,true);
+    amount.setGravity(Gravity.CENTER_VERTICAL);
+    amount.setSingleLine(true);
+    amount.setAutoSizeTextTypeUniformWithConfiguration(17,25,1,
+      TextView.AUTO_SIZE_TEXT_TYPE_UNIFORM);
+    LinearLayout.LayoutParams amountParams=new LinearLayout.LayoutParams(0,-1,1f);
+    amountParams.leftMargin=dp(9);cashRow.addView(amount,amountParams);
+    if(preview.localCount>0){
+      textInto(cashCard,"⟳ Локальні операції: "+preview.localCount+
+          " · у Google підтверджено: "+money(month.confirmedClosing)+" ₴",
+          11,0xffddf5eb,false);
       if(preview.needsAttention>0)
-        textInto(balance,"⚠ "+preview.needsAttention+" потребують перевірки в черзі",12,0xffffe0a3,true);
-      textInto(balance,"Оперативний розрахунок видно лише на цьому телефоні до передачі в Google.",
-          11,0xffe7f1ff,false);
-    }else{
-      textInto(balance,"Готівка + картка · підтверджено Google",12,0xffe7f1ff,false);
+        textInto(cashCard,"⚠ Перевірте "+preview.needsAttention+" запис(и) у черзі",
+          11,0xffffe09b,true);
     }
 
-    LinearLayout split=row();
-    screen.addView(split,new LinearLayout.LayoutParams(-1,-2));
-    summary(split,"↓  Прихід","+"+money(preview.operationalIncome)+" ₴",0xffe7f6ef,0xff168255);
-    summary(split,"↑  Розхід","−"+money(preview.operationalExpense)+" ₴",0xffffecee,0xffb63f4c);
-    if(pending)textInto(screen,"Підсумки включають локальні операції й уточняться після синхронізації.",
+    LinearLayout tiles=row();screen.addView(tiles,new LinearLayout.LayoutParams(-1,-2));
+    String start=YearMonth.parse(selectedMonth).atDay(1).toString();
+    drawMetric(tiles,"▦  Початкове\nсальдо",money(month.opening)+" ₴",
+      0xffe5f1fd,NAVY,"на "+displayDate(start));
+    drawMetric(tiles,"↓  Прихід","+"+money(month.income)+" ₴",
+      0xffe5f6eb,0xff167845,"за місяць");
+    drawMetric(tiles,"↑  Розхід","−"+money(month.expense)+" ₴",
+      0xffffe9ee,0xffa73b48,"за місяць");
+    if(month.adjustments!=0)
+      textInto(screen,"Інші коригування за місяць: "+
+        (month.adjustments>=0?"+":"−")+money(Math.abs(month.adjustments))+" ₴",
         11,MUTED,false);
 
     if(isCashier()){
-      LinearLayout actions=row();screen.addView(actions,new LinearLayout.LayoutParams(-1,-2));
+      LinearLayout actions=row();screen.addView(actions);
       button(actions,"＋ Новий прихід",()->{formKind="IN";go("form");},true);
       button(actions,"− Нова витрата",()->{formKind="OUT";go("form");},true);
     }
 
-    LinearLayout title=row();screen.addView(title);
-    TextView heading=text("Останні операції",19,NAVY,true);
-    title.addView(heading,new LinearLayout.LayoutParams(0,-2,1f));
-    TextView all=text("Усі  ›",13,TEAL,true);title.addView(all);
-    all.setOnClickListener(v->go("history"));spacer(screen,7);
+    LinearLayout head=row();screen.addView(head);
+    TextView caption=text("Операції за "+monthTitle().toLowerCase(new Locale("uk","UA"))+
+      " ("+month.rows.size()+")",17,NAVY,true);
+    head.addView(caption,new LinearLayout.LayoutParams(0,-2,1f));
+    TextView all=text("Усі ›",13,TEAL,true);head.addView(all);
+    all.setOnClickListener(v->{historyForMonth=true;go("history");});
+    spacer(screen,6);
 
     Map<String,Integer> receiptCounts=receiptCounts();
     Map<String,Long> balances=balancesAfterOperations();
     LinearLayout recent=card(screen);
-    if(preview.rows.isEmpty())textInto(recent,"Операцій поки немає",14,MUTED,false);
-    int number=Math.min(5,preview.rows.size());
-    for(int i=0;i<number;i++){
-      CashLedgerPreview.Row item=preview.rows.get(i);
+    if(month.rows.isEmpty())
+      textInto(recent,"Операцій за цей місяць немає",13,MUTED,false);
+    for(int i=0;i<Math.min(5,month.rows.size());i++){
       if(i>0)separator(recent);
-      drawCompactTransaction(recent,item,receiptCounts,balances);
+      drawCompactTransaction(recent,month.rows.get(i),receiptCounts,balances);
     }
 
     LinearLayout shortcuts=row();screen.addView(shortcuts);
     quickTile(shortcuts,"▤","Чеки витрат",countReceipts()+" файлів",()->go("receipts"));
-    quickTile(shortcuts,"☏","Запитання",unreadCount()>0?("Нових: "+unreadCount()):"Усі прочитані",()->go("questions"));
+    quickTile(shortcuts,"☏","Запитання",unreadCount()>0?"Нових: "+unreadCount():"Усі прочитані",
+      ()->go("questions"));
     quickTile(shortcuts,"☁","Синхронізація",
       outbox.list(settings.userId(),false).size()+" у черзі",()->go("queue"));
-    textInto(screen,"⟳ Локальні записи відразу видно касиру. Інші учасники бачать їх після Google.",
-        12,MUTED,false);
+    if(!month.hasLedgerSnapshot)
+      textInto(screen,"Немає з'єднання: розрахунки можуть бути неповними, доки Google не завантажиться.",
+        12,0xff936000,true);
   }
 
   private void drawCompactTransaction(LinearLayout parent,CashLedgerPreview.Row row,
