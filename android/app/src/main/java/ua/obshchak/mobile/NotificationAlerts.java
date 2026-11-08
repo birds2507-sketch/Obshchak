@@ -91,7 +91,9 @@ final class NotificationAlerts {
       Set<String> seen=new HashSet<>(prefs.getStringSet(key,new HashSet<String>()));
       if(seen.contains(id))return;
       seen.add(id);
-      prefs.edit().putStringSet(key,seen).putBoolean(key+"_initialized",true).commit();
+      // Keep first-poll baseline unset until the full event history has been fetched.
+      // Otherwise old events could be mistaken for unread after the first FCM push.
+      prefs.edit().putStringSet(key,seen).commit();
     }
     if(!enabled(context))return;
     try{
