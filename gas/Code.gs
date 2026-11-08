@@ -119,6 +119,7 @@ function api(action, data, token) {
     case 'getReceipt': return getReceipt_(user,data);
     case 'comment': return withLock_(function(){return comment_(user,data);});
     case 'invite': return withLock_(function(){return invite_(user,data);});
+    case 'bootstrapAdmin': return withLock_(function(){return bootstrapAdmin_(user,data);});
     case 'resetPassword': return withLock_(function(){return resetPassword_(user,data);});
     case 'toggleUser': return withLock_(function(){return toggleUser_(user,data);});
     case 'setReserve': return withLock_(function(){return setReserve_(user,data);});
@@ -215,28 +216,75 @@ function auth_(token) {
   if(!u || u.active!=='1' || u.version!==String(session.version))throw new Error('Доступ до облікового запису змінено. Увійдіть повторно.');
   return u;
 }
+function validPersonalPassword_(password){
+  // Four digits are allowed on request; longer alphanumeric passwords remain supported.
+  // Refuse the most guessable PINs, including the separate settings PIN.
+  var value=String(password||'');
+  if(/^[0-9]{4}$/.test(value)){
+    if(/^([0-9])\1{3}$/.test(value) ||
+       ['0123','1234','2345','3456','4567','5678','6789','9876','8765','7654',
+        '6543','5432','4321','3210','2580','0852','5618'].indexOf(value)>=0)
+      throw new Error('Надто простий PIN. Оберіть інші чотири цифри.');
+    return value;
+  }
+  if(value.length<12 || value.length>100 ||
+     !/[A-Za-zА-Яа-яІіЇїЄєҐґ]/.test(value) || !/[0-9]/.test(value))
+    throw new Error('Пароль: чотири різні/несистемні цифри або 12–100 символів (літери й цифри).');
+  return value;
+}
+
 function login_(data) {
-  var login=text_(data.login,60).toLowerCase(), pw=String(data.password||'');
-  if(!/^[a-z0-9._-]{3,30}$/.test(login) || !pw)throw new Error('Невірний логін або пароль');
-  var cache=CacheService.getScriptCache(), key='L_'+digest_(login), failures=Number(cache.get(key)||0);
-  if(failures>=8)throw new Error('Забагато спроб входу. Спробуйте через 20 хвилин.');
-  var u=all_('Users').filter(function(x){return x.login===login && x.active==='1';})[0];
-  var expected=u?u.hash:'', incoming=hashPassword_(pw,u?u.salt:'not-a-user');
-  if(!u || expected!==incoming){cache.put(key,String(failures+1),1200);throw new Error('Невірний логін або пароль');}
-  cache.remove(key);
-  var token=Utilities.getUuid().replace(/-/g,'')+Utilities.getUuid().replace(/-/g,'');
-  cache.put('S_'+digest_(token),JSON.stringify({id:u.id,version:u.version}),CFG_.SESSION_SECONDS);
-  return {token:token,user:publicUser_(u),mustChange:u.must_change==='1'};
+  var login=text_(data.login,60).toLowerCase(),pw=String(data.password||'');
+  if(!/^[a-z0-9._-]{3,30}$/.test(login) || !pw)
+    throw new Error('Невірний логін або пароль');
+  return withLock_(function(){
+    var u=all_('Users').filter(function(x){return x.login===login && x.active==='1';})[0];
+    var cache=CacheService.getScriptCache();
+    // A persistent per-account lock makes online guessing of a 4-digit PIN impractical.
+    var key='AUTH_TRIES_'+digest_(login).slice(0,28);
+    var props=PropertiesService.getScriptProperties();
+    var record={count:0,until:0,started:0};
+    if(u){
+      try{record=JSON.parse(props.getProperty(key)||'{}');}catch(ignore){}
+    }else{
+      var old=Number(cache.get(key)||0);
+      if(old>=5)throw new Error('Забагато спроб входу. Спробуйте пізніше.');
+    }
+    var now=Date.now();
+    if(Number(record.until||0)>now)
+      throw new Error('Забагато спроб входу. Спробуйте через 60 хвилин або зверніться до адміністратора.');
+    var expected=u?u.hash:'',incoming=hashPassword_(pw,u?u.salt:'not-a-user');
+    if(!u||expected!==incoming){
+      if(u){
+        var count=Number(record.count||0);
+        if(now-Number(record.started||0)>60*60*1000){count=0;record.started=now;}
+        count++;
+        record.count=count;
+        if(count>=5){record.until=now+60*60*1000;record.count=0;}
+        props.setProperty(key,JSON.stringify(record));
+      }else{
+        cache.put(key,String(Number(cache.get(key)||0)+1),3600);
+      }
+      throw new Error('Невірний логін або пароль');
+    }
+    if(u)props.deleteProperty(key);
+    cache.remove(key);
+    var token=Utilities.getUuid().replace(/-/g,'')+Utilities.getUuid().replace(/-/g,'');
+    cache.put('S_'+digest_(token),JSON.stringify({id:u.id,version:u.version}),CFG_.SESSION_SECONDS);
+    return {token:token,user:publicUser_(u),mustChange:u.must_change==='1'};
+  });
 }
 function changePassword_(user,data) {
-  var old=String(data.old||''), fresh=String(data.fresh||'');
-  if(hashPassword_(old,user.salt)!==user.hash)throw new Error('Поточний пароль неправильний');
-  if(fresh.length<12 || fresh.length>100 || !/[A-Za-zА-Яа-яІіЇїЄєҐґ]/.test(fresh) || !/[0-9]/.test(fresh))throw new Error('Новий пароль: 12–100 символів, літери та цифри.');
+  var old=String(data.old||''),fresh=validPersonalPassword_(data.fresh);
+  if(hashPassword_(old,user.salt)!==user.hash)
+    throw new Error('Поточний пароль неправильний');
   if(fresh===old)throw new Error('Новий пароль має відрізнятися');
   var salt=Utilities.getUuid();
-  updateUser_(user.id,{salt:salt,hash:hashPassword_(fresh,salt),must_change:'0',version:String(Number(user.version)+1)});
-  logAudit_(user.id,'PASSWORD','Пароль змінено');
-  return {ok:true, relogin:true};
+  updateUser_(user.id,{salt:salt,hash:hashPassword_(fresh,salt),must_change:'0',
+    version:String(Number(user.version)+1)});
+  PropertiesService.getScriptProperties().deleteProperty('AUTH_TRIES_'+digest_(user.login).slice(0,28));
+  logAudit_(user.id,'PASSWORD','Особистий пароль або PIN змінено');
+  return {ok:true,relogin:true};
 }
 function requireRole_(user,roles){if(roles.indexOf(user.role)<0)throw new Error('Недостатньо прав для цієї дії');}
 function withLock_(callback){var lock=LockService.getScriptLock();lock.waitLock(25000);try{return callback();}finally{lock.releaseLock();}}
@@ -485,15 +533,15 @@ function addTransaction_(user,data){
 
   var kind=String(data.kind||''), cents=amount_(data.amount), d=date_(data.date), personId='',personName='',method='',category='',purpose=needed_(data.purpose,'Призначення',300),noReason='';
   if(kind==='IN') {
-    method=String(data.method||'');if(['CASH','BANK'].indexOf(method)<0)throw new Error('Вкажіть: готівка або картка');
+    // A single common balance: physical storage is the cashier's responsibility.
+    method='';
     personId=String(data.personId||'');
     if(personId){var person=findUser_(personId);if(!person)throw new Error('Учасника не знайдено');personName=person.name;}
     else personName=needed_(data.personName,'Хто вніс гроші',100);
   } else if(kind==='OUT'){
     category=needed_(data.category,'Категорія витрати',80);
-    // Optional for compatibility with old Android/web clients.
-    method=String(data.method||'');
-    if(method && ['CASH','BANK'].indexOf(method)<0)throw new Error('Невірний спосіб оплати витрати');
+    // Ignore legacy card/cash details; all new expenses use one shared balance.
+    method='';
     noReason=text_(data.noReceiptReason,500);
   } else throw new Error('Виберіть прихід або розхід');
   var r=kind==='OUT'?validReceipt_(data.receipt):null;
@@ -573,51 +621,104 @@ function comment_(user,data){
   event_('COMMENT',user.name+' залишив(ла) коментар щодо витрати',user.id,id);
   return {ok:true,id:newId};
 }
+function isAdmin_(user){
+  return !!user&&['ADMIN','RESERVE'].indexOf(user.role)>=0;
+}
+function activeAdministrators_(){
+  return all_('Users').filter(function(u){
+    return u.active==='1' && (u.role==='ADMIN'||u.role==='RESERVE');
+  });
+}
+function assertAdmin_(user){
+  if(!isAdmin_(user))throw new Error('Тільки адміністратор керує обліковими записами');
+}
+function checkNewLogin_(users,data){
+  var login=text_(data.login,40).toLowerCase();
+  if(!/^[a-z0-9._-]{3,30}$/.test(login))
+    throw new Error('Логін: 3–30 латинських літер, цифр або . _ -');
+  if(users.some(function(u){return u.login===login;}))
+    throw new Error('Такий логін уже існує');
+  return login;
+}
+function startingPassword_(data){
+  // The administrator may type a four-digit temporary PIN or let the system
+  // generate a strong one-time secret. Both require the recipient to change it.
+  var requested=String(data.pin||'').trim();
+  return requested?validPersonalPassword_(requested):tempPassword_();
+}
+function bootstrapAdmin_(user,data){
+  requireRole_(user,['CASHIER']);
+  // Existing owners retain cashier rights. The first administrator is added
+  // once and independently. Do NOT mutate existing cashier or ledger records.
+  if(all_('Users').some(function(u){return u.role==='ADMIN'||u.role==='RESERVE';}))
+    throw new Error('Адміністратор вже існує. Керування користувачами доступне йому.');
+  var users=all_('Users');
+  if(users.filter(function(u){return u.active==='1';}).length>=CFG_.MAX_USERS)
+    throw new Error('Ліміт 10 активних учасників');
+  var login=checkNewLogin_(users,data),name=needed_(data.name,'Ім’я адміністратора',80);
+  var pwd=startingPassword_(data),salt=Utilities.getUuid(),id=Utilities.getUuid();
+  append_('Users',[id,login,name,'ADMIN',salt,hashPassword_(pwd,salt),'1','1',now_(),'1']);
+  logAudit_(user.id,'ADMIN_BOOTSTRAP','Створено окремого адміністратора '+login);
+  event_('USER','Адміністратора обліку призначено',user.id,id);
+  return {ok:true,login:login,password:pwd};
+}
 function invite_(user,data){
-  requireRole_(user,['CASHIER','RESERVE']);
-  var users=all_('Users');if(users.filter(function(u){return u.active==='1';}).length>=CFG_.MAX_USERS)throw new Error('Дозволено максимум 10 активних учасників');
-  var login=text_(data.login,40).toLowerCase(),name=needed_(data.name,'Ім’я учасника',80);
-  if(!/^[a-z0-9._-]{3,30}$/.test(login))throw new Error('Логін: 3–30 символів, латинські літери, цифри, крапка, дефіс або _');
-  if(users.some(function(u){return u.login===login;}))throw new Error('Цей логін уже зайнятий');
-  var pwd=tempPassword_(),salt=Utilities.getUuid(),uid=Utilities.getUuid();
+  assertAdmin_(user);
+  var users=all_('Users');
+  if(users.filter(function(u){return u.active==='1';}).length>=CFG_.MAX_USERS)
+    throw new Error('Дозволено максимум 10 активних учасників');
+  var login=checkNewLogin_(users,data),name=needed_(data.name,'Ім’я учасника',80);
+  var pwd=startingPassword_(data),salt=Utilities.getUuid(),uid=Utilities.getUuid();
   append_('Users',[uid,login,name,'MEMBER',salt,hashPassword_(pwd,salt),'1','1',now_(),'1']);
-  logAudit_(user.id,'INVITE','Додано учасника '+name+' ('+login+')');
+  logAudit_(user.id,'INVITE','Створено учасника '+name+' ('+login+')');
   event_('USER','Додано учасника '+name,user.id,uid);
   return {ok:true,login:login,password:pwd};
 }
 function resetPassword_(user,data){
-  requireRole_(user,['CASHIER','RESERVE']);
-  var other=findUser_(data.id);if(!other)throw new Error('Учасника не знайдено');
-  if(user.role==='RESERVE' && other.role==='CASHIER')throw new Error('Резервний адміністратор не може скидати пароль касира');
-  if(other.id===user.id)throw new Error('Свій пароль змінюйте в особистих налаштуваннях');
-  var pwd=tempPassword_(),salt=Utilities.getUuid();
-  updateUser_(other.id,{salt:salt,hash:hashPassword_(pwd,salt),must_change:'1',version:String(Number(other.version)+1)});
-  logAudit_(user.id,'RESET','Скинуто пароль користувача '+other.login);
+  assertAdmin_(user);
+  var other=findUser_(data.id);
+  if(!other)throw new Error('Учасника не знайдено');
+  if(other.id===user.id)
+    throw new Error('Свій пароль змінюйте в особистих налаштуваннях');
+  if(other.role==='ADMIN'||other.role==='RESERVE')
+    throw new Error('Пароль адміністратора змінюється лише самим адміністратором');
+  var pwd=startingPassword_(data),salt=Utilities.getUuid();
+  updateUser_(other.id,{salt:salt,hash:hashPassword_(pwd,salt),
+    must_change:'1',version:String(Number(other.version)+1)});
+  PropertiesService.getScriptProperties().deleteProperty('AUTH_TRIES_'+digest_(other.login).slice(0,28));
+  logAudit_(user.id,'RESET','Адміністратор змінив тимчасовий пароль для '+other.login);
   return {ok:true,login:other.login,password:pwd};
 }
 function toggleUser_(user,data){
-  requireRole_(user,['CASHIER','RESERVE']);
-  var other=findUser_(data.id);if(!other||other.role==='CASHIER'||other.id===user.id)throw new Error('Не можна змінити доступ до цього облікового запису');
+  assertAdmin_(user);
+  var other=findUser_(data.id);
+  if(!other||other.role==='CASHIER'||other.role==='ADMIN'||
+     other.role==='RESERVE'||other.id===user.id)
+    throw new Error('Неможливо змінити доступ касира або адміністратора');
   var newActive=other.active==='1'?'0':'1';
   if(newActive==='0'){
     var election=activeElection_(),electors=election&&electionElectorate_(election);
-    if(election && (!electors || electors.indexOf(other.id)>=0))
-      throw new Error('Не можна заблокувати виборця під час незавершених виборів касира');
+    if(election && (!electors||electors.indexOf(other.id)>=0))
+      throw new Error('Не можна заблокувати виборця під час активних виборів');
   }
-  if(newActive==='1'&&activeParticipants_().length>=CFG_.MAX_USERS)throw new Error('Максимум 10 активних учасників');
-  if(user.role==='RESERVE' && other.role==='RESERVE')throw new Error('Не можна вимкнути резервного адміністратора');
+  if(newActive==='1'&&activeParticipants_().length>=CFG_.MAX_USERS)
+    throw new Error('Максимум 10 активних учасників');
   updateUser_(other.id,{active:newActive,version:String(Number(other.version)+1)});
-  logAudit_(user.id,'ACCESS',(newActive==='1'?'Активовано ':'Вимкнено ')+other.login);
+  logAudit_(user.id,'ACCESS',(newActive==='1'?'Увімкнено ':'Заблоковано ')+other.login);
   return {ok:true};
 }
 function setReserve_(user,data){
-  requireRole_(user,['CASHIER']);
+  assertAdmin_(user);
   var candidate=findUser_(data.id);
-  if(!candidate || candidate.active!=='1' || candidate.id===user.id)throw new Error('Виберіть іншого активного учасника');
-  all_('Users').filter(function(u){return u.role==='RESERVE'&&u.id!==candidate.id;}).forEach(function(u){updateUser_(u.id,{role:'MEMBER',version:String(Number(u.version)+1)});});
-  updateUser_(candidate.id,{role:'RESERVE',version:String(Number(candidate.version)+1)});
-  logAudit_(user.id,'RESERVE','Призначено резервного адміністратора '+candidate.name);
-  event_('USER','Резервний адміністратор: '+candidate.name,user.id,candidate.id);
+  if(!candidate||candidate.active!=='1'||candidate.role!=='MEMBER')
+    throw new Error('Оберіть активного звичайного учасника');
+  var admins=activeAdministrators_();
+  if(admins.length!==1||admins[0].id!==user.id)
+    throw new Error('Передати роль може тільки єдиний активний адміністратор');
+  updateUser_(candidate.id,{role:'ADMIN',version:String(Number(candidate.version)+1)});
+  updateUser_(user.id,{role:'MEMBER',version:String(Number(user.version)+1)});
+  logAudit_(user.id,'ADMIN_TRANSFER','Адміністратор передав права '+candidate.name);
+  event_('USER','Права адміністратора передано іншому учаснику',user.id,candidate.id);
   return {ok:true};
 }
 // Ліміт — максимум 10 одночасно активних осіб, але мінімуму для обліку немає.
@@ -644,7 +745,7 @@ function proposeElection_(user,data){
   var voters=activeParticipants_();
   if(voters.length<3)throw new Error('Вибори касира доступні лише від 3 активних учасників. Зараз: '+voters.length+'.');
   var candidate=findUser_(data.candidateId);
-  if(!candidate||candidate.active!=='1'||candidate.role==='CASHIER')throw new Error('Виберіть активного кандидата, який не є касиром');
+  if(!candidate||candidate.active!=='1'||candidate.role!=='MEMBER')throw new Error('Кандидатом на касира може бути лише активний звичайний учасник');
   if(activeElection_())throw new Error('Уже є незавершене голосування');
   ensureElectionColumns_();
   var threshold=voteThreshold_(voters.length),id=Utilities.getUuid();
