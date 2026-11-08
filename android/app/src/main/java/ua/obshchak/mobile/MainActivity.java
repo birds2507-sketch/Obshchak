@@ -22,6 +22,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -556,7 +557,7 @@ public class MainActivity extends ComponentActivity {
       screen.addView(methodSpinner);
       methodSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){saveDraft();}});
     } else {
-      field("category","Категорія",draft.optString("category","Господарські потреби"));
+      expenseCategoryField(draft.optString("category","Господарські потреби"));
       field("noReceiptReason","Якщо немає чека — причина",draft.optString("noReceiptReason",""));
       LinearLayout row=row();screen.addView(row);
       button(row,"📷 Сфотографувати",()->takePhoto(""),false);
@@ -568,6 +569,37 @@ public class MainActivity extends ComponentActivity {
     button(screen,"✓ Зберегти на телефоні й синхронізувати",this::queueForm,true);
     textInto(screen,"Якщо мережі немає, запис залишиться у черзі. Не видаляйте дані застосунку до завершення передачі.",12,MUTED,false);
   }
+  private void expenseCategoryField(String selected){
+    textInto(screen,"Категорія витрати",13,MUTED,true);
+    AutoCompleteTextView category=new AutoCompleteTextView(this);
+    category.setSingleLine(true);
+    category.setTextSize(15);
+    category.setPadding(dp(12),dp(10),dp(12),dp(10));
+    category.setBackground(background(Color.WHITE,10));
+    category.setHint("Виберіть або введіть свою категорію");
+    category.setThreshold(0);
+    category.setDropDownHeight(dp(310));
+    ArrayAdapter<String> list=new ArrayAdapter<>(this,android.R.layout.simple_dropdown_item_1line,ExpenseCategories.OPTIONS);
+    category.setAdapter(list);
+    category.setText(selected,false);
+    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+    screen.addView(category,lp);
+    fields.put("category",category);
+    category.addTextChangedListener(new TextWatcher(){
+      public void beforeTextChanged(CharSequence text,int start,int count,int after){}
+      public void onTextChanged(CharSequence text,int start,int before,int count){saveDraft();}
+      public void afterTextChanged(Editable text){}
+    });
+    TextView open=text("▾ Переглянути категорії  ·  або введіть власну",13,TEAL,true);
+    open.setPadding(dp(6),dp(9),dp(6),dp(14));
+    screen.addView(open);
+    open.setOnClickListener(v->{
+      category.requestFocus();
+      category.showDropDown();
+    });
+    category.setOnClickListener(v->category.showDropDown());
+  }
+
   private void field(String key,String label,String value){
     EditText edit=input(screen,label,value,false);fields.put(key,edit);
     edit.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){saveDraft();}public void afterTextChanged(Editable e){}});
