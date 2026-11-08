@@ -15,6 +15,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.Map;
 
 /** Native Android status-bar notifications, with per-account deduplication. */
 final class NotificationAlerts {
@@ -74,6 +75,31 @@ final class NotificationAlerts {
       int start=Math.max(0,fresh.size()-5);
       for(int i=start;i<fresh.size();i++)post(context,fresh.get(i));
     }
+  }
+
+  /** Immediate, data-only FCM event. Uses the same seen-ID set as 15-minute fallback polling. */
+  static void receiveFcm(Context context,Map<String,String> data){
+    String currentUser=new Settings(context).userId();
+    String intended=data.get("user_id");
+    String id=data.get("event_id");
+    String type=data.get("type");
+    if(currentUser.isEmpty()||intended==null||!currentUser.equals(intended)||
+       id==null||id.isEmpty()||type==null||!isRelevant(type))return;
+    SharedPreferences prefs=context.getSharedPreferences(PREF,Context.MODE_PRIVATE);
+    String key="seen_"+currentUser;
+    synchronized(NotificationAlerts.class){
+      Set<String> seen=new HashSet<>(prefs.getStringSet(key,new HashSet<String>()));
+      if(seen.contains(id))return;
+      seen.add(id);
+      prefs.edit().putStringSet(key,seen).putBoolean(key+"_initialized",true).commit();
+    }
+    if(!enabled(context))return;
+    try{
+      JSONObject event=new JSONObject().put("id",id).put("type",type)
+        .put("summary",data.get("summary")!=null?data.get("summary"):"Нова подія у касі");
+      prepare(context);
+      post(context,event);
+    }catch(Exception ignored){}
   }
 
   private static boolean isRelevant(String type){
