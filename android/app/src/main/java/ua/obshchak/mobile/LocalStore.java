@@ -74,6 +74,26 @@ final class LocalStore extends SQLiteOpenHelper {
     }
     return rows;
   }
+  /** Lightweight list for the home screen: no years of already-synced history. */
+  List<Entry> recentTransactions(String owner){
+    List<Entry> rows=new ArrayList<>();
+    long cutoff=System.currentTimeMillis()-7L*24*60*60*1000;
+    try(Cursor c=getReadableDatabase().rawQuery(
+      "SELECT id,owner_id,payload,ledger_id,status,created_at,error FROM outbox "+
+      "WHERE owner_id=? AND (status<>? OR created_at>=?) "+
+      "ORDER BY created_at DESC LIMIT 150",
+      new String[]{owner,SYNCED,String.valueOf(cutoff)})){
+      while(c.moveToNext()){
+        Entry e=new Entry();e.id=c.getString(0);e.owner=c.getString(1);
+        e.payload=c.getString(2);e.ledger=c.getString(3);
+        e.status=c.getString(4);e.created=c.getLong(5);e.error=c.getString(6);
+        rows.add(e);
+      }
+    }
+    java.util.Collections.reverse(rows);
+    return rows;
+  }
+
   void ledger(String id,String ledger){ContentValues v=new ContentValues();v.put("ledger_id",ledger);getWritableDatabase().update("outbox",v,"id=?",new String[]{id});}
   void status(String id,String status,String error){ContentValues v=new ContentValues();v.put("status",status);v.put("error",error==null?"":error);getWritableDatabase().update("outbox",v,"id=?",new String[]{id});}
   void updatePayload(String id,JSONObject body){ContentValues v=new ContentValues();v.put("payload",body.toString());getWritableDatabase().update("outbox",v,"id=?",new String[]{id});}
