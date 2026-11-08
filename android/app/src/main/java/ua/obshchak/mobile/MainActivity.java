@@ -1271,9 +1271,12 @@ public class MainActivity extends ComponentActivity {
     LinearLayout layout=new LinearLayout(this);layout.setOrientation(LinearLayout.VERTICAL);layout.setPadding(dp(16),dp(10),dp(16),dp(8));
     textInto(layout,item.optString("purpose")+" · "+money(Math.abs(item.optLong("amount")))+" грн",18,NAVY,true);
     textInto(layout,"Дата: "+displayDate(item.optString("date")),15,NAVY,true);
-    if(item.optString("kind").equals("OUT"))
-      textInto(layout,"Напрям: "+item.optString("expense_target","Без напряму")+
-        " · Категорія: "+item.optString("category"),13,MUTED,true);
+    if(item.optString("kind").equals("OUT")){
+      String dest=item.optString("expense_target").trim();
+      if(dest.isEmpty())dest="Без напряму";
+      textInto(layout,"Напрям: "+dest+" · Категорія: "+
+        item.optString("category"),13,MUTED,true);
+    }
     Long after=balancesAfterOperations().get(item.optString("id"));
     if(after!=null)textInto(layout,"Залишок після операції: "+money(after)+" ₴",14,TEAL,true);
     JSONArray receipts=state.optJSONArray("receipts");
