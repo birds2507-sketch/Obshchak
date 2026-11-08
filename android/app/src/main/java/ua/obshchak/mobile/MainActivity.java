@@ -37,6 +37,8 @@ import androidx.activity.ComponentActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.FileProvider;
+import androidx.work.WorkInfo;
+import androidx.work.WorkManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.File;
@@ -45,6 +47,8 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -66,13 +70,17 @@ public class MainActivity extends ComponentActivity {
   private boolean doingRequest=false;
   private String historyQuery="";
   private boolean historyWithoutReceipt=false;
+  private final Set<UUID> completedSyncJobs=new HashSet<>();
   private long lastSuccessfulRefresh=0L;
   private int endpointPinFailures=0;
   private long endpointPinBlockedUntil=0L;
   private final Handler pollHandler=new Handler(Looper.getMainLooper());
   private final Runnable pollTask=new Runnable(){@Override public void run(){
-    if(!secure.token().isEmpty()&&!doingRequest&&page.equals("home") && android.os.SystemClock.elapsedRealtime()-lastSuccessfulRefresh>=60000)refresh();
-    pollHandler.postDelayed(this,60000);
+    if(secure!=null&&!secure.token().isEmpty()&&!doingRequest&&
+      (page.equals("home")||page.equals("history")||page.equals("questions")||
+       page.equals("activity")) &&
+      android.os.SystemClock.elapsedRealtime()-lastSuccessfulRefresh>=45000)refresh();
+    pollHandler.postDelayed(this,30000);
   }};
 
   @Override protected void onCreate(Bundle b){
@@ -106,6 +114,7 @@ public class MainActivity extends ComponentActivity {
       }
     }
     draw();
+    observeSyncCompletion();
     if(!page.equals("login")){
       refresh();
       maybeAskNotificationPermission();
@@ -113,8 +122,29 @@ public class MainActivity extends ComponentActivity {
   }
   @Override protected void onResume(){
     super.onResume();
-    pollHandler.postDelayed(pollTask,60000);
-    if(secure!=null && !secure.token().isEmpty())FirebaseBridge.register(this);
+    pollHandler.removeCallbacks(pollTask);
+    pollHandler.postDelayed(pollTask,30000);
+    if(secure!=null&&!secure.token().isEmpty()){
+      FirebaseBridge.register(this);
+      if(lastSuccessfulRefresh>0&&!doingRequest&&
+          android.os.SystemClock.elapsedRealtime()-lastSuccessfulRefresh>=45000)refresh();
+    }
+  }
+
+  private void observeSyncCompletion(){
+    WorkManager.getInstance(this).getWorkInfosForUniqueWorkLiveData("obshchak_sync")
+      .observe(this,infos->{
+        if(infos==null||infos.isEmpty())return;
+        boolean finishedNew=false;
+        for(WorkInfo info:infos){
+          if(info.getState().isFinished()&&completedSyncJobs.add(info.getId()))
+            finishedNew=true;
+        }
+        if(!finishedNew||secure==null||secure.token().isEmpty())return;
+        // Keep local cards visible until the confirmed Google ledger is fetched.
+        if(page.equals("home")||page.equals("history")||page.equals("queue"))draw();
+        if(!doingRequest)refresh();
+      });
   }
   @Override protected void onNewIntent(Intent intent){
     super.onNewIntent(intent);setIntent(intent);
@@ -392,7 +422,7 @@ public class MainActivity extends ComponentActivity {
     balance.setPadding(dp(20),dp(18),dp(18),dp(18));
     textInto(balance,"Загальний залишок",15,0xffdce9ff,true);
     textInto(balance,money(totals.optLong("balance"))+" ₴",33,Color.WHITE,true);
-    textInto(balance,"Готівка + картка · обліковий баланс",12,0xffe7f1ff,false);
+    textInto(balance,"Готівка + картка · лише підтверджені записи Google",12,0xffe7f1ff,false);
 
     LinearLayout split=row();
     screen.addView(split,new LinearLayout.LayoutParams(-1,-2));
@@ -407,6 +437,7 @@ public class MainActivity extends ComponentActivity {
       button(actions,"− Витрата",()->{formKind="OUT";go("form");},true);
     }
 
+    drawLocalEntries(screen);
     LinearLayout title=row();screen.addView(title);
     TextView heading=text("Останні операції",19,NAVY,true);
     title.addView(heading,new LinearLayout.LayoutParams(0,-2,1f));
@@ -454,6 +485,73 @@ public class MainActivity extends ComponentActivity {
     quickTile(shortcuts,"☁","Синхронізація",outbox.list(settings.userId(),false).size()+" у черзі",()->go("queue"));
     spacer(screen,6);
     textInto(screen,"Записи, не передані в Google, поки не входять до загального залишку.",12,MUTED,false);
+  }
+
+  /**
+   * Show durable SQLite transactions immediately; never merge their values into
+   * the official balance until the Google ledger confirms them.
+   */
+  private void drawLocalEntries(LinearLayout parent){
+    if(!isCashier()||settings.userId().isEmpty())return;
+    java.util.List<LocalStore.Entry> all=outbox.list(settings.userId(),true);
+    if(all.isEmpty())return;
+    Set<String> remoteIds=new HashSet<>();
+    JSONArray remote=state.optJSONArray("ledger");
+    if(remote!=null)for(int i=0;i<remote.length();i++){
+      JSONObject item=remote.optJSONObject(i);
+      if(item!=null)remoteIds.add(item.optString("id"));
+    }
+    ArrayList<LocalStore.Entry> outstanding=new ArrayList<>();
+    int notConfirmed=0,attention=0;
+    for(int i=all.size()-1;i>=0;i--){
+      LocalStore.Entry entry=all.get(i);
+      JSONObject tx=entry.body().optJSONObject("tx");
+      if(tx==null||remoteIds.contains(entry.id)||
+        (!entry.ledger.isEmpty()&&remoteIds.contains(entry.ledger)))continue;
+      // Old completed entries can be safely omitted if Google has long since moved on.
+      if(LocalStore.SYNCED.equals(entry.status)&&
+        System.currentTimeMillis()-entry.created>7L*24*60*60*1000)continue;
+      outstanding.add(entry);
+      if(entry.ledger.isEmpty())notConfirmed++;
+      if(LocalStore.FAILED.equals(entry.status)||LocalStore.AUTH.equals(entry.status))attention++;
+    }
+    if(outstanding.isEmpty())return;
+    LinearLayout card=card(parent);
+    card.setBackground(background(attention>0?0xfffff1df:0xffeaf4f9,15));
+    textInto(card,"На цьому телефоні · "+outstanding.size()+" записів",16,NAVY,true);
+    textInto(card,notConfirmed>0?
+        (notConfirmed+" ще не підтверджено в Google · не входять до загального балансу"):
+        "Операції вже надіслані · оновлюємо загальний журнал",
+        12,MUTED,false);
+    int shown=Math.min(4,outstanding.size());
+    for(int i=0;i<shown;i++){
+      LocalStore.Entry entry=outstanding.get(i);
+      JSONObject tx=entry.body().optJSONObject("tx");
+      if(tx==null)continue;
+      if(i>0)separator(card);
+      boolean expense="OUT".equals(tx.optString("kind"));
+      String amount=tx.optString("amount","0").replace(',','.');
+      textInto(card,(expense?"− ":"＋ ")+tx.optString("purpose","Операція")+
+          " · "+amount+" ₴",14,NAVY,true);
+      textInto(card,displayDate(tx.optString("date"))+" · "+
+          localTransactionStatus(entry),12,
+          LocalStore.FAILED.equals(entry.status)||LocalStore.AUTH.equals(entry.status)?
+          0xffa54817:TEAL,true);
+    }
+    if(outstanding.size()>shown)
+      textInto(card,"І ще "+(outstanding.size()-shown)+" записів",12,MUTED,false);
+    TextView link=text("Переглянути передачу та помилки  ›",13,TEAL,true);
+    card.addView(link);
+    card.setOnClickListener(v->go("queue"));
+    link.setOnClickListener(v->go("queue"));
+  }
+
+  private String localTransactionStatus(LocalStore.Entry e){
+    if(LocalStore.FAILED.equals(e.status))return "⚠ Потрібна ваша увага";
+    if(LocalStore.AUTH.equals(e.status))return "⚠ Потрібен повторний вхід";
+    if(LocalStore.SYNCED.equals(e.status))return "✓ Передано в Google · очікує оновлення екрана";
+    if(!e.ledger.isEmpty())return "✓ Операція в Google · чеки передаються";
+    return "◷ Збережено на телефоні · синхронізується";
   }
 
   private void summary(LinearLayout row,String label,String amount,int bg,int ink){
@@ -693,8 +791,15 @@ public class MainActivity extends ComponentActivity {
         tx.put("noReceiptReason",files.length()>0?"Чек збережений на телефоні; очікується синхронізація":d.optString("noReceiptReason"));}
       String id=UUID.randomUUID().toString();JSONObject envelope=new JSONObject();envelope.put("tx",tx);envelope.put("files",files);
       outbox.add(id,settings.userId(),envelope.toString());
-      settings.clearDraft(formKind);QueueSyncWorker.schedule(this);
-      message("Збережено на телефоні. Надішлеться, коли буде інтернет.");go("queue");
+      settings.clearDraft(formKind);
+      // The successful SQLite write is the save point; no Google response is required.
+      go("home");
+      try{
+        QueueSyncWorker.schedule(this);
+        message("✓ Операцію збережено на телефоні. Передача в Google — у фоні.");
+      }catch(Exception schedulingError){
+        message("✓ Операцію збережено. Передачу можна повторити у «Синхронізація».");
+      }
     }catch(Exception ex){message("Не вдалося зберегти запис: "+ex.getMessage());}
   }
 
@@ -776,6 +881,7 @@ public class MainActivity extends ComponentActivity {
   private void drawHistory(){
     textInto(screen,"Операції",23,NAVY,true);
     textInto(screen,"Шукайте за назвою, датою або сумою. Результати оновлюються одразу.",12,MUTED,false);
+    drawLocalEntries(screen);
     spacer(screen,8);
     EditText search=input(screen,"Пошук","",false);
     search.setHint("Назва, 21.03.2026 або 150,00");
