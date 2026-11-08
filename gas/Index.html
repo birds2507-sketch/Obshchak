@@ -16,7 +16,7 @@
 function safeGet(k){try{return sessionStorage.getItem(k)||'';}catch(e){return '';}}
 function safeSet(k,v){try{sessionStorage.setItem(k,v);}catch(e){}}
 function safeRemove(k){try{sessionStorage.removeItem(k);}catch(e){}}
-const A={token:safeGet('obshchak_token'),state:null,page:'home',kind:'IN',selected:null,preview:null,secret:null,filter:'ALL',reportFrom:'',reportTo:'',loading:false,lastEvent:safeGet('obshchak_event'),error:''};
+const A={token:safeGet('obshchak_token'),state:null,page:'home',kind:'IN',selected:null,preview:null,secret:null,filter:'ALL',reportFrom:'',reportTo:'',loading:false,lastEvent:safeGet('obshchak_event'),error:'',registrationState:null};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s===undefined||s===null?'':s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const euro=n=> (Number(n)/100).toLocaleString('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₴';
@@ -45,11 +45,27 @@ $('#root').innerHTML=`<div class="layout"><header class="top"><div class="logo">
 ${A.selected?detailModal():''}${A.preview?previewModal():''}${A.secret?secretModal():''}`;
 restoreForm();
 }
+function firstAdminRegistrationForm(){
+  return '<form id="register-first-admin">'
+  +'<p class="small">Для першої реєстрації потрібен одноразовий код із журналу виконання Apps Script. Код діє 7 днів.</p>'
+  +'<div class="field"><label>Код власника (64 символи)</label><input class="input" name="code" required minlength="64" maxlength="64" autocomplete="off"></div>'
+  +'<div class="field"><label>Ім’я адміністратора</label><input class="input" name="name" required maxlength="80"></div>'
+  +'<div class="field"><label>Логін латиницею</label><input class="input" name="login" pattern="[a-zA-Z0-9._-]{3,30}" required></div>'
+  +'<div class="field"><label>PIN з 4 цифр або довгий пароль</label><input class="input" name="password" type="password" minlength="4" autocomplete="new-password" required></div>'
+  +'<div class="field"><label>Повторіть PIN / пароль</label><input class="input" name="repeat" type="password" minlength="4" autocomplete="new-password" required></div>'
+  +'<p class="tiny">Комбінації 0000, 1234, 5618 заборонені. Код реєстрації використовується лише раз.</p>'
+  +'<button class="btn primary full" type="submit">Зареєструвати адміністратора</button></form>';
+}
+async function checkAdminRegistration(){
+  if(A.token)return;
+  try{A.registrationState=await invoke('registrationState');renderLogin();}
+  catch(e){A.error=e.message;renderLogin();}
+}
 function renderLogin(forceChange=false){
-  $('#root').innerHTML=`<div class="login-shell"><div class="login-box stack"><div class="stack-sm" style="text-align:center"><div class="logo" style="justify-content:center"><span class="logo-icon">₴</span>ОБЩАК</div><p class="muted">Прозора каса для своєї компанії</p></div><div class="card"><h2 style="margin-bottom:18px">${forceChange?'Зміна тимчасового пароля':'Вхід до общака'}</h2>${A.error?`<p class="status error" style="margin-bottom:14px">${esc(A.error)}</p>`:''}
-${forceChange?`<form id="change-first"><div class="field"><label>Поточний пароль</label><input class="input" type="password" name="old" required></div><div class="field"><label>Новий PIN (4 цифри) або довгий пароль</label><input class="input" type="password" name="fresh" minlength="4" required></div><button class="btn primary full" type="submit">Змінити пароль</button></form>`:
+  $('#root').innerHTML=`<div class="login-shell"><div class="login-box stack"><div class="stack-sm" style="text-align:center"><div class="logo" style="justify-content:center"><span class="logo-icon">₴</span>ОБЩАК</div><p class="muted">Прозора каса для своєї компанії</p></div><div class="card"><h2 style="margin-bottom:18px">${A.registrationState?.needsAdmin&&!forceChange?'Реєстрація першого адміністратора':forceChange?'Зміна тимчасового пароля':'Вхід до общака'}</h2>${A.error?`<p class="status error" style="margin-bottom:14px">${esc(A.error)}</p>`:''}
+${!forceChange&&A.registrationState?.needsAdmin?firstAdminRegistrationForm():forceChange?`<form id="change-first"><div class="field"><label>Поточний пароль</label><input class="input" type="password" name="old" required></div><div class="field"><label>Новий PIN (4 цифри) або довгий пароль</label><input class="input" type="password" name="fresh" minlength="4" required></div><button class="btn primary full" type="submit">Змінити пароль</button></form>`:
 `<form id="login"><div class="field"><label>Логін</label><input class="input" name="login" autocomplete="username" required placeholder="Ваш логін"></div><div class="field"><label>Пароль</label><input class="input" type="password" name="password" autocomplete="current-password" required></div><button class="btn primary full" type="submit">Увійти</button></form>`}
-</div><p class="tiny" style="text-align:center">Доступ лише за особистими логінами. Не передавайте свої паролі іншим.</p></div></div>`;
+</div><p class="tiny" style="text-align:center">Логіни й права створює адміністратор. Особисті паролі не передавайте нікому.</p></div></div>`;
 }
 function home(){const t=A.state.totals, recent=A.state.ledger.slice(0,7), pending=A.state.events.slice(0,4), waiting=(A.state.reversalRequests||[]).filter(r=>r.status==='PENDING'||r.status==='DISPUTED');return `<div class="stack"><div class="card balance"><div class="muted small">ЗАГАЛЬНИЙ ЗАЛИШОК ОБЩАКА</div><div class="bigmoney mono">${euro(t.balance)}</div><div class="muted small">Єдиний обліковий залишок незалежно від способу зберігання.</div></div>
 <div class="grid2"><div class="card"><div class="tiny">↙ ПРИХІД</div><div class="metric positive mono">${euro(t.income)}</div></div><div class="card"><div class="tiny">↗ РОЗХІД</div><div class="metric negative mono">${euro(t.expense)}</div></div></div>
@@ -295,7 +311,7 @@ try{let previous=A.state?.events?.[0]?.id;let result=await invoke('state');A.sta
 if(previous && result.events?.[0]?.id!==previous && A.lastEvent!==result.events?.[0]?.id){toast('Є нові події общака. Перевірте активність.');}
 if(result.events?.[0]?.id){A.lastEvent=result.events[0].id;safeSet('obshchak_event',A.lastEvent);}
 if(renderNow)render();else render();
-}catch(err){if(/сеанс|увійти|доступ|пароль/i.test(err.message)){A.token='';safeRemove('obshchak_token');A.state=null;A.error=err.message;renderLogin();}else toast(err.message,true);}}
+}catch(err){if(/сеанс|увійти|доступ|пароль/i.test(err.message)){A.token='';safeRemove('obshchak_token');A.state=null;A.error=err.message;renderLogin();checkAdminRegistration();}else toast(err.message,true);}}
 function saveBlob(obj){let binary=atob(obj.data),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);let blob=new Blob([bytes],{type:obj.mime}),url=URL.createObjectURL(blob);return url;}
 async function handler(action,data,success='Збережено'){try{await request(action,data);toast(success);}catch(err){toast(err.message,true);}}
 // Web safety net: drafts survive re-render or camera/gallery cancellation.
@@ -314,6 +330,12 @@ document.addEventListener('change',ev=>{if(ev.target.closest('#add-transaction')
 document.addEventListener('submit',async ev=>{
 const f=ev.target;if(!f.id)return;ev.preventDefault();let d=fromForm(f);
 try{
+if(f.id==='register-first-admin'){
+  if(d.password!==d.repeat)throw new Error('PIN або паролі не збігаються');
+  await invoke('registerFirstAdmin',d);
+  A.registrationState={needsAdmin:false};A.error='';
+  renderLogin();toast('Першого адміністратора створено. Тепер увійдіть.');return;
+}
 if(f.id==='login'){let r=await invoke('login',d);A.token=r.token;safeSet('obshchak_token',r.token);A.error='';if(r.mustChange){A.state=null;renderLogin(true);}else await load();return;}
 if(f.id==='change-first'||f.id==='change-password'){let r=await invoke('changePassword',d);A.token='';safeRemove('obshchak_token');A.error='Пароль змінено. Увійдіть знову.';A.state=null;renderLogin();return;}
 if(f.id==='opening-balance'){await request('openingBalance',d);toast('Початковий залишок записано.');return;}
@@ -421,5 +443,5 @@ else if(act==='password'){A.state=null;renderLogin(true);}
 });
 document.addEventListener('change',ev=>{if(ev.target.id==='filter'){A.filter=ev.target.value;render();}if(ev.target.id==='person-select'){let x=$('#otherperson');if(x)x.style.display=ev.target.value==='OTHER'?'block':'none';}});
 setInterval(()=>{if(A.token&&A.state&&!A.selected&&!A.preview&&!A.secret&&!document.querySelector('#add-transaction, input:focus,textarea:focus,select:focus'))load();},60000);
-if(A.token)load();else renderLogin();
+if(A.token)load();else {renderLogin();checkAdminRegistration();}
 </script></body></html>
