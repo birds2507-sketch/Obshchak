@@ -53,7 +53,7 @@ ${forceChange?`<form id="change-first"><div class="field"><label>Поточни�
 }
 function home(){const t=A.state.totals, recent=A.state.ledger.slice(0,7), pending=A.state.events.slice(0,4), waiting=(A.state.reversalRequests||[]).filter(r=>r.status==='PENDING'||r.status==='DISPUTED');return `<div class="stack"><div class="card balance"><div class="muted small">ЗАГАЛЬНИЙ ЗАЛИШОК ОБЩАКА</div><div class="bigmoney mono">${euro(t.balance)}</div><div class="muted small">Єдиний обліковий залишок незалежно від способу зберігання.</div></div>
 <div class="grid2"><div class="card"><div class="tiny">↙ ПРИХІД</div><div class="metric positive mono">${euro(t.income)}</div></div><div class="card"><div class="tiny">↗ РОЗХІД</div><div class="metric negative mono">${euro(t.expense)}</div></div></div>
-${waiting.length?'<div class="card"><div class="headrow"><h2>⚠ Сторнування на розгляді: '+waiting.length+'</h2><button class="btn sm" data-act="page" data-page="reversals">Переглянути</button></div><p class="tiny">До погодження адміністратора загальний залишок не зміниться.</p></div>':''}<div class="card"><div class="headrow"><h2>Останні операції</h2><button class="btn sm" data-act="page" data-page="ledger">Усі →</button></div>${recent.length?recent.map(txRow).join(''):'<div class="empty">Поки немає операцій. Касир може додати перший прихід.</div>'}</div>
+${waiting.length?'<div class="card"><div class="headrow"><h2>⚠ Сторнування на розгляді: '+waiting.length+'</h2><button class="btn sm" data-act="page" data-page="reversals">Переглянути</button></div><p class="tiny">До погодження адміністратора загальний залишок не зміниться.</p></div>':''}${(A.state.reimbursements||[]).some(r=>['REQUESTED','APPROVED','PAID_PENDING_CONFIRMATION','PAYMENT_DISPUTED'].includes(r.status))?`<div class="card"><div class="headrow"><h2>Борги / Відшкодування</h2><button class="btn sm" data-act="page" data-page="debts">Переглянути</button></div><p class="small">До виплати: ${euro((A.state.reimbursements||[]).filter(r=>['REQUESTED','APPROVED'].includes(r.status)).reduce((n,r)=>n+Number(r.amount),0))}</p></div>`:''}<div class="card"><div class="headrow"><h2>Останні операції</h2><button class="btn sm" data-act="page" data-page="ledger">Усі →</button></div>${recent.length?recent.map(txRow).join(''):'<div class="empty">Поки немає операцій. Касир може додати перший прихід.</div>'}</div>
 <div class="card"><div class="headrow"><h2>Що нового</h2><button class="btn sm" data-act="page" data-page="activity">Історія →</button></div>${pending.length?pending.map(x=>`<div class="rowitem" data-act="event" data-ref="${esc(x.ref_id)}"><div><strong>${esc(x.summary)}</strong><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join(''):'<div class="empty">Подій ще немає.</div>'}</div></div>`;}
 function kindName(x){return x==='IN'?'Прихід':x==='OUT'?'Розхід':'Коригування';}
 function reversedIds(){return new Set(A.state.ledger.filter(x=>x.kind==='REVERSAL').map(x=>x.correction_of));}
@@ -303,6 +303,21 @@ if(f.id==='handover'){await request('recordHandover',d);toast('Акт перед
 if(f.id==='add-transaction'){d.kind=A.kind;let file=f.querySelector('input[type=file]')?.files?.[0];if(d.kind==='OUT')d.receipt=await toData(file);if(d.kind==='IN'&&d.personId==='OTHER')d.personId='';await request('addTransaction',d);try{localStorage.removeItem(draftKey());}catch(e){}toast('Операцію додано.');return;}
 if(f.id==='add-receipt'){d.receipt=await toData(f.querySelector('input[type=file]').files[0]);await request('addReceipt',d);toast('Чек додано.');return;}
 if(f.id==='add-comment'){await request('comment',d);toast('Коментар додано.');return;}
+if(f.id==='debt-request'){
+  let file=f.querySelector('input[type=file]')?.files?.[0];
+  if(!file)throw new Error('Прикріпіть чек');
+  if(file.size>2000000)throw new Error('Максимальний розмір чека — 2 МБ');
+  const id=safeGet('obshchak_pending_debt')||crypto.randomUUID();
+  safeSet('obshchak_pending_debt',id);
+  d.clientId=id;d.receipt=await toData(file);
+  await request('createReimbursement',d);
+  safeRemove('obshchak_pending_debt');
+  toast('Заявку з чеком подано всім учасникам.');return;
+}
+if(f.id==='debt-comment'){
+  d.clientId=crypto.randomUUID();
+  await request('commentReimbursement',d);toast('Коментар опубліковано.');return;
+}
 if(f.id==='reverse'){if(!confirm('Надіслати заявку адміністратору? Залишок поки не зміниться.'))return;await request('reverseTransaction',d);toast('Заявку подано. Баланс не змінено.');return;}
 if(f.id==='bootstrap-admin'||f.id==='invite'){let r=await request(f.id==='bootstrap-admin'?'bootstrapAdmin':'invite',d);A.secret={login:r.login,password:r.password};render();return;}
 if(f.id==='propose'){await request('proposeElection',d);toast('Ініціативу створено.');return;}
@@ -326,6 +341,32 @@ else if(act==='reversal-approve'){if(!confirm('Підтвердити сторн
   let reason=prompt('Коментар адміністратора');if(reason===null)return;
   if(!reason.trim())throw new Error('Вкажіть коментар');
   await handler('decideReversal',{id:button.dataset.id,decision:'APPROVE',reason:reason.trim()},'Сторнування схвалено.');}
+else if(act==='debt-receipt'){
+  let result=await invoke('getReceipt',{id:button.dataset.id});
+  A.preview={name:result.name,mime:result.mime,url:saveBlob(result)};render();
+}
+else if(act==='debt-approve'){
+  if(!confirm('Погодити борг? Баланс каси поки не зміниться.'))return;
+  await handler('decideReimbursement',{id:button.dataset.id,decision:'APPROVE'},'Борг погоджено.');
+}
+else if(act==='debt-reject'){
+  let reason=prompt('Причина відхилення');if(reason===null)return;
+  if(!reason.trim())throw new Error('Вкажіть причину');
+  await handler('decideReimbursement',{id:button.dataset.id,decision:'REJECT',reason:reason.trim()},'Борг відхилено.');
+}
+else if(act==='debt-pay'){
+  if(!confirm('Ви фактично передали гроші учаснику? Ця дія створить одну витрату каси.'))return;
+  await handler('payReimbursement',{id:button.dataset.id},'Виплату проведено, очікуємо підтвердження отримувача.');
+}
+else if(act==='debt-confirm'){
+  if(!confirm('Підтверджуєте повне отримання грошей?'))return;
+  await handler('confirmReimbursement',{id:button.dataset.id,received:'YES'},'Отримання грошей підтверджено.');
+}
+else if(act==='debt-dispute'){
+  let reason=prompt('Опишіть, чому гроші не отримано');if(reason===null)return;
+  if(!reason.trim())throw new Error('Потрібно вказати причину');
+  await handler('confirmReimbursement',{id:button.dataset.id,received:'NO',reason:reason.trim()},'Заперечення виплати бачать усі.');
+}
 else if(act==='receipt'){let r=await invoke('getReceipt',{id:button.dataset.id});A.preview={name:r.name,mime:r.mime,url:saveBlob(r)};render();}
 else if(act==='close-preview'){if(ev.target!==button && button.tagName!=='BUTTON')return;if(A.preview?.url)URL.revokeObjectURL(A.preview.url);A.preview=null;render();}
 else if(act==='event'){const ref=button.dataset.ref;if(A.state.ledger.some(x=>x.id===ref)){A.selected=ref;render();}else{A.page='activity';render();}}
