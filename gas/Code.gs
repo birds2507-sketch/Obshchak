@@ -1666,7 +1666,8 @@ function addGeneralQuestion_(user,data,kind){
     throw new Error('Невірний ID повідомлення');
   var items=generalQuestions_(), existing=clientId?
     items.filter(function(x){return x.id===clientId;})[0]:null;
-  var thread=kind==='QUESTION'?(clientId||Utilities.getUuid()):String(data.threadId||'');
+  var id=clientId||Utilities.getUuid();
+  var thread=kind==='QUESTION'?id:String(data.threadId||'');
   if(kind==='REPLY'&&!items.some(function(x){return x.id===thread&&x.kind==='QUESTION';}))
     throw new Error('Запитання не знайдено');
   if(existing){
@@ -1676,7 +1677,6 @@ function addGeneralQuestion_(user,data,kind){
     return {ok:true,id:existing.id,threadId:thread,alreadyExists:true};
   }
   // Keep one independent participant discussion, never amend ledger or financial rows.
-  var id=clientId||Utilities.getUuid();
   ensureGeneralQuestions_();
   append_('GeneralQuestions',[id,thread,user.id,message,now_(),kind]);
   event_('COMMENT',kind==='QUESTION'?'Нове загальне запитання':'Нова відповідь у загальних запитаннях',user.id,thread);
