@@ -15,4 +15,4 @@ jobs:
         with:
           node-version: '22'
       - name: Legacy Android API and new general Q&A
-        run: node tests/test_gas_api.js
+        run: node tests/test_general_questions_compat.js
