@@ -45,6 +45,7 @@ function post(action,data,token='') {
  return JSON.parse(out.getContent());
 }
 assert(!!registrationCode,'one-time first-admin code issued');
+console.log('registration status',post('registrationState',{},'').result);
 assert(post('registerFirstAdmin',{code:registrationCode,name:'Тестовий адміністратор',login:'testadmin',password:'TestAdminSecure2026'},'').ok,'register first administrator');
 const adminToken=post('login',{login:'testadmin',password:'TestAdminSecure2026'}).result.token;
 const cashierInvite=post('invite',{name:'Касир',login:'kasyr',role:'CASHIER'},adminToken).result;
