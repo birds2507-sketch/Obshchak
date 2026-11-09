@@ -16,7 +16,7 @@
 function safeGet(k){try{return sessionStorage.getItem(k)||'';}catch(e){return '';}}
 function safeSet(k,v){try{sessionStorage.setItem(k,v);}catch(e){}}
 function safeRemove(k){try{sessionStorage.removeItem(k);}catch(e){}}
-const A={token:safeGet('obshchak_token'),state:null,page:'home',kind:'IN',selected:null,preview:null,secret:null,filter:'ALL',reportFrom:'',reportTo:'',loading:false,lastEvent:safeGet('obshchak_event'),error:'',registrationState:null};
+const A={token:safeGet('obshchak_token'),state:null,page:'home',kind:'IN',selected:null,preview:null,secret:null,filter:'ALL',reportFrom:'',reportTo:'',loading:false,lastEvent:safeGet('obshchak_event'),error:'',registrationState:null,questions:[],questionsError:''};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s===undefined||s===null?'':s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const euro=n=> (Number(n)/100).toLocaleString('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₴';
@@ -415,7 +415,7 @@ ${enabled&&active.status==='APPROVED'&&A.state.me.id===active.candidate_id?`<but
 }
 
 function generalQuestionsPage(){
- const all=A.state.generalQuestions||[];
+ const all=A.questions||[];
  const roots=all.filter(x=>x.kind==='QUESTION');
  let html='<div class="stack"><div class="headrow"><h1>Загальні запитання</h1>'+
    '<span class="tag">'+roots.length+' запитань</span></div>'+
@@ -424,6 +424,7 @@ function generalQuestionsPage(){
    '<form id="general-question"><div class="field">'+
    '<label>Ваше запитання</label><textarea class="textarea" name="message" required maxlength="1500" placeholder="Напишіть запитання касиру або адміністратору"></textarea></div>'+
    '<button class="btn primary" type="submit">Опублікувати запитання</button></form></div>';
+ if(A.questionsError)html+='<div class="card status error">'+esc(A.questionsError)+'</div>';
  if(!roots.length)html+='<div class="card empty">Загальних запитань ще немає.</div>';
  for(const root of roots){
    const replies=all.filter(x=>x.kind==='REPLY'&&x.thread_id===root.id).reverse();
@@ -452,11 +453,17 @@ function generalQuestionsPage(){
 function activityPage(){return `<div class="stack"><h1>Активність та історія</h1><div class="card"><h2>Події та сповіщення</h2><p class="tiny" style="margin:9px 0">Оновлення під час відкритого застосунку приблизно щохвилини. Push при закритому застосунку в цій тестовій версії ще немає.</p>${A.state.events.map(x=>`<div class="rowitem" data-act="event" data-ref="${esc(x.ref_id)}"><div><strong>${esc(x.summary)}</strong><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join('')||'<div class="empty">Немає подій</div>'}</div><div class="card"><h2>Журнал дій</h2>${A.state.audit.map(x=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(x.action)} · ${esc(nameOf(x.actor_id))}</strong><div class="tiny clamp">${esc(x.details)}</div><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join('')||'<div class="empty">Поки немає записів</div>'}</div></div>`;}
 function fromForm(f){return Object.fromEntries(new FormData(f).entries());}
 function toData(file){return new Promise((resolve,reject)=>{if(!file){resolve(null);return;}if(file.size>2000000){reject(new Error('Чек має бути до 2 МБ'));return;}if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(file.type)){reject(new Error('Потрібен JPG, PNG, WebP або PDF'));return;}let reader=new FileReader();reader.onload=()=>resolve({name:file.name,mime:file.type,data:String(reader.result).split(',')[1]});reader.onerror=()=>reject(new Error('Не вдалося прочитати файл'));reader.readAsDataURL(file);});}
+
+async function loadGeneralQuestions(){
+ try{A.questions=await invoke('generalQuestions');A.questionsError='';}
+ catch(e){A.questions=[];A.questionsError=e.message;toast(e.message,true);}
+ render();
+}
 async function load(renderNow=true){if(!A.token){A.state=null;renderLogin();return;}
 try{let previous=A.state?.events?.[0]?.id;let result=await invoke('state');A.state=result;
 if(previous && result.events?.[0]?.id!==previous && A.lastEvent!==result.events?.[0]?.id){toast('Є нові події общака. Перевірте активність.');}
 if(result.events?.[0]?.id){A.lastEvent=result.events[0].id;safeSet('obshchak_event',A.lastEvent);}
-if(renderNow)render();else render();
+if(A.page==='generalquestions')await loadGeneralQuestions();else render();
 }catch(err){if(/сеанс|увійти|доступ|пароль/i.test(err.message)){A.token='';safeRemove('obshchak_token');A.state=null;A.error=err.message;renderLogin();checkAdminRegistration();}else toast(err.message,true);}}
 function saveBlob(obj){let binary=atob(obj.data),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);let blob=new Blob([bytes],{type:obj.mime}),url=URL.createObjectURL(blob);return url;}
 async function handler(action,data,success='Збережено'){try{await request(action,data);toast(success);}catch(err){toast(err.message,true);}}
@@ -482,7 +489,7 @@ if(f.id==='register-first-admin'){
   A.registrationState={needsAdmin:false};A.error='';
   renderLogin();toast('Першого адміністратора створено. Тепер увійдіть.');return;
 }
-if(f.id==='login'){let r=await invoke('login',d);A.token=r.token;safeSet('obshchak_token',r.token);A.error='';if(r.mustChange){A.state=null;renderLogin(true);}else await load();return;}
+if(f.id==='login'){let r=await invoke('login',d);A.questions=[];A.questionsError='';A.token=r.token;safeSet('obshchak_token',r.token);A.error='';if(r.mustChange){A.state=null;renderLogin(true);}else await load();return;}
 if(f.id==='change-first'||f.id==='change-password'){let r=await invoke('changePassword',d);A.token='';safeRemove('obshchak_token');A.error='Пароль змінено. Увійдіть знову.';A.state=null;renderLogin();return;}
 if(f.id==='opening-balance'){await request('openingBalance',d);toast('Початковий залишок записано.');return;}
 if(f.id==='handover'){await request('recordHandover',d);toast('Акт передачі зафіксовано.');return;}
@@ -513,7 +520,7 @@ if(f.id==='propose'){await request('proposeElection',d);toast('Ініціати�
 });
 document.addEventListener('click',async ev=>{let button=ev.target.closest('[data-act]');if(!button)return;if(ev.target.closest('[data-stop]')&&!button.hasAttribute('data-act'))return;let act=button.dataset.act;
 try{
-if(act==='page'){const target=button.dataset.page;if(target==='votes'&&A.state.electionsEnabled===false)return;if(target==='income'){A.page='ledger';A.filter='IN';A.kind='IN';}else if(target==='expenses'){A.page='ledger';A.filter='OUT';A.kind='OUT';}else{A.page=target;if(target==='ledger')A.filter='ALL';}A.selected=null;render();window.scrollTo(0,0);}
+if(act==='page'){const target=button.dataset.page;if(target==='votes'&&A.state.electionsEnabled===false)return;if(target==='income'){A.page='ledger';A.filter='IN';A.kind='IN';}else if(target==='expenses'){A.page='ledger';A.filter='OUT';A.kind='OUT';}else{A.page=target;if(target==='ledger')A.filter='ALL';}A.selected=null;render();window.scrollTo(0,0);if(A.page==='generalquestions')await loadGeneralQuestions();}
 else if(act==='refresh')await load();
 else if(act==='kind'){A.kind=button.dataset.kind;render();}
 else if(act==='detail'){A.selected=button.dataset.id;render();}
@@ -576,7 +583,7 @@ else if(act==='debt-appeal-uphold'||act==='debt-appeal-reject'){
 else if(act==='receipt'){let r=await invoke('getReceipt',{id:button.dataset.id});A.preview={name:r.name,mime:r.mime,url:saveBlob(r)};render();}
 else if(act==='close-preview'){if(ev.target!==button && button.tagName!=='BUTTON')return;if(A.preview?.url)URL.revokeObjectURL(A.preview.url);A.preview=null;render();}
 else if(act==='event'){const ref=button.dataset.ref;if(A.state.ledger.some(x=>x.id===ref)){A.selected=ref;render();}else{A.page='activity';render();}}
-else if(act==='logout'){await invoke('logout');A.token='';A.state=null;safeRemove('obshchak_token');A.error='';renderLogin();}
+else if(act==='logout'){await invoke('logout');A.token='';A.state=null;A.questions=[];A.questionsError='';safeRemove('obshchak_token');A.error='';renderLogin();}
 else if(act==='secret-close'){A.secret=null;render();}
 else if(act==='copy-secret'){let s=A.secret;await navigator.clipboard.writeText('ОБЩАК\nЛогін: '+s.login+'\nТимчасовий пароль: '+s.password);toast('Скопійовано. Передавайте особисто.');}
 else if(act==='reset'){if(!confirm('Створити новий тимчасовий пароль? Старий перестане діяти.'))return;let r=await request('resetPassword',{id:button.dataset.id});A.secret=r;render();}
