@@ -1,0 +1,18 @@
+name: Test ОБЩАК API compatibility
+on:
+  push:
+    paths: ['gas/**', 'tests/**', '.github/workflows/questions-compat.yml']
+  pull_request:
+    paths: ['gas/**', 'tests/**', '.github/workflows/questions-compat.yml']
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Legacy Android API and new general Q&A
+        run: node tests/test_general_questions_compat.js

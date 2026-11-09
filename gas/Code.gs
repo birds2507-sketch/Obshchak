@@ -17,6 +17,7 @@ var CFG_ = {
     ReimbursementComments: ['id','claim_id','author_id','message','created_at'],
     Receipts: ['id','ledger_id','file_id','filename','mime','size','created_at','created_by'],
     Comments: ['id','ledger_id','author_id','message','created_at'],
+    GeneralQuestions: ['id','thread_id','author_id','message','created_at','kind'],
     Elections: ['id','initiator','supporter','candidate_id','status','created_at','updated_at','book_balance','electorate','required_votes'],
     Ballots: ['id','election_id','voter_id','vote','created_at'],
     Events: ['id','type','summary','created_at','actor_id','ref_id'],
@@ -221,6 +222,9 @@ function api(action, data, token) {
     case 'addReceipt': return withLock_(function(){return addReceipt_(user,data);});
     case 'getReceipt': return getReceipt_(user,data);
     case 'comment': return withLock_(function(){return comment_(user,data);});
+    case 'generalQuestions': return generalQuestionFeed_();
+    case 'askGeneralQuestion': return withLock_(function(){return addGeneralQuestion_(user,data,'QUESTION');});
+    case 'replyGeneralQuestion': return withLock_(function(){return addGeneralQuestion_(user,data,'REPLY');});
     case 'invite': return withLock_(function(){return invite_(user,data);});
     case 'bootstrapAdmin': return withLock_(function(){return bootstrapAdmin_(user,data);});
     case 'resetPassword': return withLock_(function(){return resetPassword_(user,data);});
@@ -645,6 +649,7 @@ function state_(user) {
     ledger:ledger.sort(function(a,b){return Number(b.posting_order)-Number(a.posting_order);}),
     receipts:receipts,
     comments:all_('Comments').sort(function(a,b){return a.created_at.localeCompare(b.created_at);}),
+
     elections:elections.sort(function(a,b){return b.created_at.localeCompare(a.created_at);}),
     ballots:ballots,handovers:all_('Handovers'),
     events:all_('Events').slice(-80).reverse(),
@@ -1630,4 +1635,58 @@ function initializeObshchak(){
     return {ok:true,cleared:wiped,receiptFilesTrashed:removedFiles,
       databaseUrl:spreadsheet.getUrl(),needsAdmin:true};
   });
+}
+
+/**
+ * General Q&A is an additive feature. Existing ledger-linked Comments, reimbursements,
+ * transactions, user roles, tokens and Android state keys are unchanged.
+ * Old clients ignore the optional generalQuestions field and continue to work.
+ */
+function generalQuestions_(){
+  var sheet=db_().getSheetByName('GeneralQuestions');
+  return sheet ? all_('GeneralQuestions') : [];
+}
+function generalQuestionFeed_(){
+  var rows=generalQuestions_(), roots=rows.filter(function(x){return x.kind==='QUESTION';}).slice(-75);
+  var threads={};roots.forEach(function(x){threads[x.id]=true;});
+  return rows.filter(function(x){return threads[x.thread_id]===true;}).reverse();
+}
+function ensureGeneralQuestions_(){
+  var book=db_(), sheet=book.getSheetByName('GeneralQuestions');
+  if(!sheet){
+    sheet=book.insertSheet('GeneralQuestions');
+    sheet.appendRow(CFG_.HEADERS.GeneralQuestions);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1,1,1,CFG_.HEADERS.GeneralQuestions.length)
+      .setFontWeight('bold').setBackground('#e2e8f0');
+    sheet.getRange(2,1,Math.max(1,sheet.getMaxRows()-1),
+      CFG_.HEADERS.GeneralQuestions.length).setNumberFormat('@');
+  }
+  return sheet;
+}
+function addGeneralQuestion_(user,data,kind){
+  if(kind!=='QUESTION'&&kind!=='REPLY')throw new Error('Невідомий тип повідомлення');
+  var message=needed_(data.message,'Текст повідомлення',CFG_.MAX_MESSAGE);
+  var clientId=String(data.clientId||'');
+  if(clientId&&!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(clientId))
+    throw new Error('Невірний ID повідомлення');
+  var items=generalQuestions_(), existing=clientId?
+    items.filter(function(x){return x.id===clientId;})[0]:null;
+  var id=clientId||Utilities.getUuid();
+  var thread=kind==='QUESTION'?id:String(data.threadId||'');
+  if(kind==='REPLY'&&!items.some(function(x){return x.id===thread&&x.kind==='QUESTION';}))
+    throw new Error('Запитання не знайдено');
+  if(existing){
+    if(existing.author_id!==user.id||existing.kind!==kind||
+       existing.thread_id!==thread||existing.message!==message)
+      throw new Error('Повторний ID належить іншому повідомленню');
+    return {ok:true,id:existing.id,threadId:thread,alreadyExists:true};
+  }
+  // Keep one independent participant discussion, never amend ledger or financial rows.
+  ensureGeneralQuestions_();
+  append_('GeneralQuestions',[id,thread,user.id,message,now_(),kind]);
+  event_('COMMENT',kind==='QUESTION'?'Нове загальне запитання':'Нова відповідь у загальних запитаннях',user.id,thread);
+  logAudit_(user.id,kind==='QUESTION'?'GENERAL_QUESTION':'GENERAL_REPLY',
+    'Повідомлення в загальному обговоренні '+thread);
+  return {ok:true,id:id,threadId:thread};
 }

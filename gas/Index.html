@@ -16,7 +16,7 @@
 function safeGet(k){try{return sessionStorage.getItem(k)||'';}catch(e){return '';}}
 function safeSet(k,v){try{sessionStorage.setItem(k,v);}catch(e){}}
 function safeRemove(k){try{sessionStorage.removeItem(k);}catch(e){}}
-const A={token:safeGet('obshchak_token'),state:null,page:'home',kind:'IN',selected:null,preview:null,secret:null,filter:'ALL',reportFrom:'',reportTo:'',loading:false,lastEvent:safeGet('obshchak_event'),error:'',registrationState:null};
+const A={token:safeGet('obshchak_token'),state:null,page:'home',kind:'IN',selected:null,preview:null,secret:null,filter:'ALL',reportFrom:'',reportTo:'',loading:false,lastEvent:safeGet('obshchak_event'),error:'',registrationState:null,questions:[],questionsError:''};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s===undefined||s===null?'':s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const euro=n=> (Number(n)/100).toLocaleString('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₴';
@@ -37,12 +37,12 @@ function navBtn(id,label,icon){const active=(id==='income'&&A.page==='ledger'&&A
 function mobileBtn(id,label,icon){const active=(id==='income'&&A.page==='ledger'&&A.filter==='IN')||(id==='expenses'&&A.page==='ledger'&&A.filter==='OUT')||A.page===id;return `<button type="button" class="${active?'active':''}" data-act="page" data-page="${id}"><b>${icon}</b>${label}</button>`;}
 function render(){if(!A.state){renderLogin();return;}
 if(A.page==='votes'&&A.state.electionsEnabled===false)A.page='home';
-let me=A.state.me, items=[['home','Головна','⌂'],['income','Доходи','↓'],['expenses','Витрати','↑'],['ledger','Операції','⇄'],['mycontributions','Мій кабінет','♙'],['reports','Звіти','▤'],['debts','Борги','₴'],['people','Люди','♟']];
+let me=A.state.me, items=[['home','Головна','⌂'],['income','Доходи','↓'],['expenses','Витрати','↑'],['ledger','Операції','⇄'],['mycontributions','Мій кабінет','♙'],['reports','Звіти','▤'],['debts','Борги','₴'],['generalquestions','Запитання','?'],['people','Люди','♟']];
 if(A.state.electionsEnabled!==false)items.push(['votes','Вибори','✓']);
 const mobileItems=[['home','Головна','⌂'],['income','Доходи','↓'],['expenses','Витрати','↑'],['mycontributions','Мої внески','♙'],['more','Меню','☰']];
 $('#root').innerHTML=`<div class="layout"><header class="top"><div class="logo"><span class="logo-icon">₴</span>ОБЩАК</div><div class="userchip"><span class="badge-dot"></span><span>${esc(me.name)} <span class="tiny">${esc(me.role==='CASHIER'?'касир':['ADMIN','RESERVE'].includes(me.role)?'адміністратор':'учасник')}</span></span><button class="btn sm outline" data-act="logout">Вийти</button></div></header>
 <nav class="nav">${items.map(x=>navBtn(...x)).join('')}${navBtn('reversals','Сторнування','↶')}${navBtn('activity','Активність','◷')}</nav>
-<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='more'?morePage():A.page==='mycontributions'?myContributionsPage():A.page==='votes'?votesPage():A.page==='debts'?debtsPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
+<main>${A.page==='home'?home():A.page==='ledger'?ledgerPage():A.page==='reports'?reportsPage():A.page==='people'?peoplePage():A.page==='more'?morePage():A.page==='mycontributions'?myContributionsPage():A.page==='votes'?votesPage():A.page==='debts'?debtsPage():A.page==='generalquestions'?generalQuestionsPage():A.page==='reversals'?reversalsPage():activityPage()}</main>
 <div class="tiny" style="text-align:center;margin-top:24px">Дані Google Таблиці · Онлайн-облік, не банківський баланс · <button class="btn sm" data-act="refresh">Оновити</button> <button class="btn sm" data-act="password">Змінити пароль</button></div></div>
 <nav class="bottom-nav">${mobileItems.map(x=>mobileBtn(...x)).join('')}</nav>
 ${A.selected?detailModal():''}${A.preview?previewModal():''}${A.secret?secretModal():''}`;
@@ -340,7 +340,7 @@ function electionRules(e){
 function morePage(){
  const enabled=A.state.electionsEnabled!==false;
  const entries=[['ledger','Усі операції'],['people','Учасники / керування'],
-   ['reports','Звіти'],['debts','Борги / Відшкодування'],
+   ['reports','Звіти'],['debts','Борги / Відшкодування'],['generalquestions','Загальні запитання'],
    ['reversals','Сторнування'],['activity','Події та сповіщення']];
  if(enabled)entries.push(['votes','Вибори касира']);
  return '<div class="stack"><div class="headrow"><h1>Меню ОБЩАК</h1></div>'+
@@ -413,14 +413,57 @@ ${enabled&&active.status==='APPROVED'&&A.state.me.id===active.candidate_id?`<but
    Голосування й прийняття повноважень призупинені. Історія збережена.</div>`:'';
  return `<div class="stack"><div class="headrow"><h1>Вибори касира</h1><span class="tag">${live}/10 активних</span></div>${adminToggle}${disabledBanner}${content}${handoverBox}<div class="card"><h2>Історія голосувань</h2>${A.state.elections.length?A.state.elections.map(x=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(nameOf(x.candidate_id))}</strong><div class="tiny">${stamp(x.created_at)}</div></div><span class="tag">${esc(x.status)}</span></div>`).join(''):'<div class="empty">Голосувань не було</div>'}</div></div>`;
 }
+
+function generalQuestionsPage(){
+ const all=A.questions||[];
+ const roots=all.filter(x=>x.kind==='QUESTION');
+ let html='<div class="stack"><div class="headrow"><h1>Загальні запитання</h1>'+
+   '<span class="tag">'+roots.length+' запитань</span></div>'+
+   '<div class="card formwrap"><h2>Поставити запитання</h2>'+
+   '<p class="tiny" style="margin:8px 0 15px">Наприклад, про майбутні витрати або внески. Повідомлення видно всім учасникам ОБЩАКУ.</p>'+
+   '<form id="general-question"><div class="field">'+
+   '<label>Ваше запитання</label><textarea class="textarea" name="message" required maxlength="1500" placeholder="Напишіть запитання касиру або адміністратору"></textarea></div>'+
+   '<button class="btn primary" type="submit">Опублікувати запитання</button></form></div>';
+ if(A.questionsError)html+='<div class="card status error">'+esc(A.questionsError)+'</div>';
+ if(!roots.length)html+='<div class="card empty">Загальних запитань ще немає.</div>';
+ for(const root of roots){
+   const replies=all.filter(x=>x.kind==='REPLY'&&x.thread_id===root.id).reverse();
+   const user=A.state.users.find(x=>x.id===root.author_id);
+   const role=user?(user.role==='CASHIER'?' · касир':
+     ['ADMIN','RESERVE'].includes(user.role)?' · адміністратор':' · учасник'):'';
+   html+='<div class="card"><div class="headrow align-top"><div><h2>'+
+     esc(nameOf(root.author_id))+esc(role)+'</h2><div class="tiny">'+stamp(root.created_at)+
+     '</div></div><span class="tag">'+replies.length+' відповідей</span></div>'+
+     '<p class="clamp" style="margin:14px 0;white-space:pre-wrap">'+esc(root.message)+'</p>';
+   for(const reply of replies){
+     const author=A.state.users.find(x=>x.id===reply.author_id);
+     const isOffice=author&&['CASHIER','ADMIN','RESERVE'].includes(author.role);
+     html+='<div class="comment '+(isOffice?'cashier':'')+'"><div class="headrow">'+
+       '<b class="small">'+esc(nameOf(reply.author_id))+(isOffice?' · '+esc(author.role==='CASHIER'?'касир':'адміністратор'):'')+
+       '</b><span class="tiny">'+stamp(reply.created_at)+'</span></div>'+
+       '<p class="small clamp" style="white-space:pre-wrap;margin-top:7px">'+esc(reply.message)+'</p></div>';
+   }
+   html+='<form id="general-reply" style="margin-top:12px"><input type="hidden" name="threadId" value="'+esc(root.id)+'">'+
+     '<textarea class="textarea" name="message" required maxlength="1500" placeholder="Написати відповідь…"></textarea>'+
+     '<button class="btn sm secondary" type="submit" style="margin-top:8px">Відповісти</button></form></div>';
+ }
+ return html+'</div>';
+}
+
 function activityPage(){return `<div class="stack"><h1>Активність та історія</h1><div class="card"><h2>Події та сповіщення</h2><p class="tiny" style="margin:9px 0">Оновлення під час відкритого застосунку приблизно щохвилини. Push при закритому застосунку в цій тестовій версії ще немає.</p>${A.state.events.map(x=>`<div class="rowitem" data-act="event" data-ref="${esc(x.ref_id)}"><div><strong>${esc(x.summary)}</strong><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join('')||'<div class="empty">Немає подій</div>'}</div><div class="card"><h2>Журнал дій</h2>${A.state.audit.map(x=>`<div class="rowitem" style="cursor:default"><div><strong>${esc(x.action)} · ${esc(nameOf(x.actor_id))}</strong><div class="tiny clamp">${esc(x.details)}</div><div class="tiny">${stamp(x.created_at)}</div></div></div>`).join('')||'<div class="empty">Поки немає записів</div>'}</div></div>`;}
 function fromForm(f){return Object.fromEntries(new FormData(f).entries());}
 function toData(file){return new Promise((resolve,reject)=>{if(!file){resolve(null);return;}if(file.size>2000000){reject(new Error('Чек має бути до 2 МБ'));return;}if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(file.type)){reject(new Error('Потрібен JPG, PNG, WebP або PDF'));return;}let reader=new FileReader();reader.onload=()=>resolve({name:file.name,mime:file.type,data:String(reader.result).split(',')[1]});reader.onerror=()=>reject(new Error('Не вдалося прочитати файл'));reader.readAsDataURL(file);});}
+
+async function loadGeneralQuestions(){
+ try{A.questions=await invoke('generalQuestions');A.questionsError='';}
+ catch(e){A.questions=[];A.questionsError=e.message;toast(e.message,true);}
+ render();
+}
 async function load(renderNow=true){if(!A.token){A.state=null;renderLogin();return;}
 try{let previous=A.state?.events?.[0]?.id;let result=await invoke('state');A.state=result;
 if(previous && result.events?.[0]?.id!==previous && A.lastEvent!==result.events?.[0]?.id){toast('Є нові події общака. Перевірте активність.');}
 if(result.events?.[0]?.id){A.lastEvent=result.events[0].id;safeSet('obshchak_event',A.lastEvent);}
-if(renderNow)render();else render();
+if(A.page==='generalquestions')await loadGeneralQuestions();else render();
 }catch(err){if(/сеанс|увійти|доступ|пароль/i.test(err.message)){A.token='';safeRemove('obshchak_token');A.state=null;A.error=err.message;renderLogin();checkAdminRegistration();}else toast(err.message,true);}}
 function saveBlob(obj){let binary=atob(obj.data),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);let blob=new Blob([bytes],{type:obj.mime}),url=URL.createObjectURL(blob);return url;}
 async function handler(action,data,success='Збережено'){try{await request(action,data);toast(success);}catch(err){toast(err.message,true);}}
@@ -446,13 +489,15 @@ if(f.id==='register-first-admin'){
   A.registrationState={needsAdmin:false};A.error='';
   renderLogin();toast('Першого адміністратора створено. Тепер увійдіть.');return;
 }
-if(f.id==='login'){let r=await invoke('login',d);A.token=r.token;safeSet('obshchak_token',r.token);A.error='';if(r.mustChange){A.state=null;renderLogin(true);}else await load();return;}
+if(f.id==='login'){let r=await invoke('login',d);A.questions=[];A.questionsError='';A.token=r.token;safeSet('obshchak_token',r.token);A.error='';if(r.mustChange){A.state=null;renderLogin(true);}else await load();return;}
 if(f.id==='change-first'||f.id==='change-password'){let r=await invoke('changePassword',d);A.token='';safeRemove('obshchak_token');A.error='Пароль змінено. Увійдіть знову.';A.state=null;renderLogin();return;}
 if(f.id==='opening-balance'){await request('openingBalance',d);toast('Початковий залишок записано.');return;}
 if(f.id==='handover'){await request('recordHandover',d);toast('Акт передачі зафіксовано.');return;}
 if(f.id==='add-transaction'){d.kind=A.kind;let file=f.querySelector('input[type=file]')?.files?.[0];if(d.kind==='OUT')d.receipt=await toData(file);if(d.kind==='IN'&&d.personId==='OTHER'){d.personId='';if(!d.personName?.trim())throw new Error('Вкажіть, хто вніс гроші');}await request('addTransaction',d);try{localStorage.removeItem(draftKey());}catch(e){}toast('Операцію додано.');return;}
 if(f.id==='add-receipt'){d.receipt=await toData(f.querySelector('input[type=file]').files[0]);await request('addReceipt',d);toast('Чек додано.');return;}
 if(f.id==='add-comment'){await request('comment',d);toast('Коментар додано.');return;}
+if(f.id==='general-question'){d.clientId=crypto.randomUUID();await request('askGeneralQuestion',d);toast('Запитання опубліковано.');return;}
+if(f.id==='general-reply'){d.clientId=crypto.randomUUID();await request('replyGeneralQuestion',d);toast('Відповідь опубліковано.');return;}
 if(f.id==='debt-request'){
   let file=f.querySelector('input[type=file]')?.files?.[0];
   if(!file)throw new Error('Прикріпіть чек');
@@ -475,7 +520,7 @@ if(f.id==='propose'){await request('proposeElection',d);toast('Ініціати�
 });
 document.addEventListener('click',async ev=>{let button=ev.target.closest('[data-act]');if(!button)return;if(ev.target.closest('[data-stop]')&&!button.hasAttribute('data-act'))return;let act=button.dataset.act;
 try{
-if(act==='page'){const target=button.dataset.page;if(target==='votes'&&A.state.electionsEnabled===false)return;if(target==='income'){A.page='ledger';A.filter='IN';A.kind='IN';}else if(target==='expenses'){A.page='ledger';A.filter='OUT';A.kind='OUT';}else{A.page=target;if(target==='ledger')A.filter='ALL';}A.selected=null;render();window.scrollTo(0,0);}
+if(act==='page'){const target=button.dataset.page;if(target==='votes'&&A.state.electionsEnabled===false)return;if(target==='income'){A.page='ledger';A.filter='IN';A.kind='IN';}else if(target==='expenses'){A.page='ledger';A.filter='OUT';A.kind='OUT';}else{A.page=target;if(target==='ledger')A.filter='ALL';}A.selected=null;render();window.scrollTo(0,0);if(A.page==='generalquestions')await loadGeneralQuestions();}
 else if(act==='refresh')await load();
 else if(act==='kind'){A.kind=button.dataset.kind;render();}
 else if(act==='detail'){A.selected=button.dataset.id;render();}
@@ -538,7 +583,7 @@ else if(act==='debt-appeal-uphold'||act==='debt-appeal-reject'){
 else if(act==='receipt'){let r=await invoke('getReceipt',{id:button.dataset.id});A.preview={name:r.name,mime:r.mime,url:saveBlob(r)};render();}
 else if(act==='close-preview'){if(ev.target!==button && button.tagName!=='BUTTON')return;if(A.preview?.url)URL.revokeObjectURL(A.preview.url);A.preview=null;render();}
 else if(act==='event'){const ref=button.dataset.ref;if(A.state.ledger.some(x=>x.id===ref)){A.selected=ref;render();}else{A.page='activity';render();}}
-else if(act==='logout'){await invoke('logout');A.token='';A.state=null;safeRemove('obshchak_token');A.error='';renderLogin();}
+else if(act==='logout'){await invoke('logout');A.token='';A.state=null;A.questions=[];A.questionsError='';safeRemove('obshchak_token');A.error='';renderLogin();}
 else if(act==='secret-close'){A.secret=null;render();}
 else if(act==='copy-secret'){let s=A.secret;await navigator.clipboard.writeText('ОБЩАК\nЛогін: '+s.login+'\nТимчасовий пароль: '+s.password);toast('Скопійовано. Передавайте особисто.');}
 else if(act==='reset'){if(!confirm('Створити новий тимчасовий пароль? Старий перестане діяти.'))return;let r=await request('resetPassword',{id:button.dataset.id});A.secret=r;render();}
