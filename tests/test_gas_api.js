@@ -39,11 +39,16 @@ function fail(fn,msg){let failed=false;try{fn();}catch(e){failed=true;}assert(fa
 
 // Simulate Apps Script doPost with Google Sheets/Drive mocks.
 call('setupOwner_');
-const password=log.find(x=>x[0].includes('тимчасовий пароль'))[1];
+const registrationCode=log.find(x=>x[0].includes('КОД ПЕРШОГО АДМІНІСТРАТОРА'))?.[1];
 function post(action,data,token='') {
  const out=call('doPost',{postData:{contents:JSON.stringify({action,data,token})}});
  return JSON.parse(out.getContent());
 }
+assert(!!registrationCode,'one-time first-admin code issued');
+assert(post('registerFirstAdmin',{code:registrationCode,name:'Тестовий адміністратор',login:'testadmin',password:'TestAdminSecure2026'},'').ok,'register first administrator');
+const adminToken=post('login',{login:'testadmin',password:'TestAdminSecure2026'}).result.token;
+const cashierInvite=post('invite',{name:'Касир',login:'kasyr',role:'CASHIER'},adminToken).result;
+const password=cashierInvite.password;
 let first=post('login',{login:'kasyr',password});assert(first.ok,'Android login');
 let token=first.result.token;
 assert(post('changePassword',{old:password,fresh:'VeryStrongPass2026!'},token).ok,'password change');
@@ -72,7 +77,7 @@ assert(state.receipts.filter(x=>x.id===receiptId).length===1,'one Drive receipt 
 const balance=state.totals.balance;
 assert(balance===-25000,'balance reflects one 250 UAH expense');
 // Only cashier can upload receipts or write financial operations.
-let invited=post('invite',{name:'Учасник',login:'mymember'},token).result;
+let invited=post('invite',{name:'Учасник',login:'mymember'},adminToken).result;
 let otherToken=post('login',{login:invited.login,password:invited.password}).result.token;
 assert(!post('addTransaction',{...expense,clientId:'ee4e8420-b512-4bc9-9e45-1fd8e6c52231'},otherToken).ok,'member cannot create expense');
 console.log('PASS: Android HTTPS JSON bridge, ledger idempotency, receipt idempotency, access roles, balance');
