@@ -21,7 +21,7 @@ const google={Utilities:{
   newBlob:(bytes,mime,name)=>({bytes,mime,name,getBytes:()=>bytes})
 },
   SpreadsheetApp:{create:()=>{let id=uuid(),s=new Spreadsheet(id);dbs.set(id,s);return s;},openById:id=>dbs.get(id)},
-  PropertiesService:{getScriptProperties:()=>({getProperty:k=>props.get(k),setProperties:o=>Object.entries(o).forEach(([k,v])=>props.set(k,v))})},
+  PropertiesService:{getScriptProperties:()=>({getProperty:k=>props.get(k),setProperty:(k,v)=>props.set(k,v),deleteProperty:k=>props.delete(k),setProperties:o=>Object.entries(o).forEach(([k,v])=>props.set(k,v))})},
   CacheService:{getScriptCache:()=>({get:k=>cache.get(k),put:(k,v)=>cache.set(k,v),remove:k=>cache.delete(k)})},
   LockService:{getScriptLock:()=>({waitLock(){},releaseLock(){}})},
   DriveApp:{createFolder:()=>driveFolder,getFolderById:()=>driveFolder,getFileById:id=>drives.get(id)||({getAs:()=>({getBytes:()=>Array.from(Buffer.from('fake-pdf'))}),setTrashed(){}})},
