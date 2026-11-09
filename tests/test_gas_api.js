@@ -76,6 +76,40 @@ let invited=post('invite',{name:'Учасник',login:'mymember'},token).result
 let otherToken=post('login',{login:invited.login,password:invited.password}).result.token;
 assert(!post('addTransaction',{...expense,clientId:'ee4e8420-b512-4bc9-9e45-1fd8e6c52231'},otherToken).ok,'member cannot create expense');
 console.log('PASS: Android HTTPS JSON bridge, ledger idempotency, receipt idempotency, access roles, balance');
+
+// Backward-compatible general discussion: older Android action names and state keys stay intact.
+const legacyState=post('state',{},otherToken).result;
+assert(Array.isArray(legacyState.generalQuestions),'optional generalQuestions collection returned');
+const baseCommentCount=legacyState.comments.length;
+const baseLedgerCount=legacyState.ledger.length;
+const baseBalance=legacyState.totals.balance;
+const questionClientId='b147b5c0-3762-482c-b3c5-4d6576fe3b20';
+const answerClientId='9e699850-a69c-4930-9f5b-076d3b28d64c';
+const generalQuestion={clientId:questionClientId,message:'Коли планується наступний внесок?'};
+const ask=post('askGeneralQuestion',generalQuestion,otherToken);
+assert(ask.ok&&ask.result.threadId===questionClientId,'member may ask a new question');
+assert(post('askGeneralQuestion',generalQuestion,otherToken).result.alreadyExists,'question upload is idempotent');
+assert(!post('askGeneralQuestion',{clientId:questionClientId,message:'Змінив текст'},otherToken).ok,'same ID with changed question rejected');
+const reply={clientId:answerClientId,threadId:ask.result.threadId,message:'Дата буде оголошена окремо.'};
+const answer=post('replyGeneralQuestion',reply,token);
+assert(answer.ok,'cashier may reply');
+assert(post('replyGeneralQuestion',reply,token).result.alreadyExists,'reply upload is idempotent');
+assert(!post('replyGeneralQuestion',{clientId:'6086727f-3d20-438e-a70e-62929363f738',threadId:'unknown',message:'???'},otherToken).ok,'reject unknown threads');
+assert(!post('askGeneralQuestion',{message:'Неавторизований'},'').ok,'reject anonymous posting');
+const newerState=post('state',{},otherToken).result;
+assert(newerState.generalQuestions.length===2&&newerState.generalQuestions[0].kind==='REPLY','state includes the new thread in stable order');
+assert(newerState.comments.length===baseCommentCount,'legacy expense comments unchanged');
+assert(newerState.ledger.length===baseLedgerCount&&newerState.totals.balance===baseBalance,'financial ledger and balance unchanged');
+assert(Array.isArray(newerState.reimbursementComments)&&Array.isArray(newerState.receipts),'legacy JSON response fields unchanged');
+console.log('PASS: legacy Android state/actions unaffected, independent general Q&A, no financial mutations');
+// Compile the embedded web JavaScript, including new questions UI, without a browser.
+const html=fs.readFileSync(require('path').join(__dirname,'..','gas','Index.html'),'utf8');
+const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+assert(scripts.length===1,'one embedded web script');
+for(const script of scripts)new vm.Script(script[1],{filename:'Index.html'});
+assert(html.includes('generalQuestionsPage')&&html.includes("f.id==='general-question'"),'web Q&A page exposed');
+console.log('PASS: web UI JavaScript syntax, question and reply routes');
+
 // Password change invalidates old device credential via user.version.
 const change=post('changePassword',{old:'VeryStrongPass2026!',fresh:'EvenStrongerPass2027!'},token);
 assert(change.ok,'password change allowed');
