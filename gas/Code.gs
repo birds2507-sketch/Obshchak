@@ -222,6 +222,7 @@ function api(action, data, token) {
     case 'addReceipt': return withLock_(function(){return addReceipt_(user,data);});
     case 'getReceipt': return getReceipt_(user,data);
     case 'comment': return withLock_(function(){return comment_(user,data);});
+    case 'generalQuestions': return generalQuestionFeed_();
     case 'askGeneralQuestion': return withLock_(function(){return addGeneralQuestion_(user,data,'QUESTION');});
     case 'replyGeneralQuestion': return withLock_(function(){return addGeneralQuestion_(user,data,'REPLY');});
     case 'invite': return withLock_(function(){return invite_(user,data);});
@@ -648,7 +649,7 @@ function state_(user) {
     ledger:ledger.sort(function(a,b){return Number(b.posting_order)-Number(a.posting_order);}),
     receipts:receipts,
     comments:all_('Comments').sort(function(a,b){return a.created_at.localeCompare(b.created_at);}),
-    generalQuestions:generalQuestions_().slice(-300).reverse(),
+
     elections:elections.sort(function(a,b){return b.created_at.localeCompare(a.created_at);}),
     ballots:ballots,handovers:all_('Handovers'),
     events:all_('Events').slice(-80).reverse(),
@@ -1644,6 +1645,11 @@ function initializeObshchak(){
 function generalQuestions_(){
   var sheet=db_().getSheetByName('GeneralQuestions');
   return sheet ? all_('GeneralQuestions') : [];
+}
+function generalQuestionFeed_(){
+  var rows=generalQuestions_(), roots=rows.filter(function(x){return x.kind==='QUESTION';}).slice(-75);
+  var threads={};roots.forEach(function(x){threads[x.id]=true;});
+  return rows.filter(function(x){return threads[x.thread_id]===true;}).reverse();
 }
 function ensureGeneralQuestions_(){
   var book=db_(), sheet=book.getSheetByName('GeneralQuestions');
